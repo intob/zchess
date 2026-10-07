@@ -14,7 +14,8 @@ MATCH_NODES=${MATCH_NODES:-10000}
 
 # Build with the current best net embedded so the play/UCI binary keeps it.
 NET_OPT=""
-if [ -f nets/best.txt ] && [ "$(cat nets/best.txt)" != hce ]; then NET_OPT="-Dnet=$(cat nets/best.txt)"; fi
+hidden_of() { od -An -tu4 -j8 -N4 "$1" | tr -d ' '; }
+if [ -f nets/best.txt ] && [ "$(cat nets/best.txt)" != hce ]; then NET_OPT="-Dnet=$(cat nets/best.txt) -Dhidden=$(hidden_of "$(cat nets/best.txt)")"; fi
 zig build $NET_OPT
 
 RAN=()

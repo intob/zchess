@@ -9,7 +9,8 @@ const build_options = @import("build_options");
 const Position = position.Position;
 
 pub const INPUTS = 768;
-pub const HIDDEN = 256;
+/// Set at build time with -Dhidden= (default 256).
+pub const HIDDEN: usize = build_options.hidden;
 pub const BUCKETS = 8;
 pub const QA = 255;
 pub const QB = 64;
@@ -60,6 +61,12 @@ pub const Network = struct {
 };
 
 pub const embedded: ?[]const u8 = if (build_options.has_net) @embedFile("default_net") else null;
+
+comptime {
+    if (HIDDEN % LANES != 0) @compileError("-Dhidden must be a multiple of 16");
+    if (embedded) |e| if (e.len != Network.file_size)
+        @compileError("the -Dnet network doesn't match -Dhidden (wrong layer size)");
+}
 
 pub const Accumulator = struct {
     v: [2][HIDDEN]i16 align(64),

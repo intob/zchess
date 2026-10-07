@@ -8,8 +8,12 @@ pub fn build(b: *std.Build) void {
     // Optionally embed a trained network: zig build -Dnet=nets/gen3.nnue
     const net_path = b.option([]const u8, "net", "NNUE file to embed as the default evaluation");
 
+    // Network width; nets only load into a binary built with the same size.
+    const hidden = b.option(u32, "hidden", "NNUE hidden layer size (default 256, multiple of 16)") orelse 256;
+
     const options = b.addOptions();
     options.addOption(bool, "has_net", net_path != null);
+    options.addOption(u32, "hidden", hidden);
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),

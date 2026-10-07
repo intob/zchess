@@ -15,3 +15,6 @@ zig-out-x86/
 ab.log
 config.json
 gauntlet-*.log
+sprt/
+bins/
+h512.log

@@ -19,7 +19,7 @@ OUT=gauntlet/$(date +%Y%m%d-%H%M)-$(basename "$NET" .nnue)
 mkdir -p "$OUT"
 
 # Freeze a binary with this net embedded.
-zig build -Dnet="$NET"
+zig build -Dnet="$NET" -Dhidden="$(od -An -tu4 -j8 -N4 "$NET" | tr -d ' ')"
 cp zig-out/bin/zchess "$OUT/zchess"
 
 # 20k shuffled book positions as EPD (fixed seed, so runs are comparable).

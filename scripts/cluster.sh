@@ -32,9 +32,14 @@ hosts() {
     grep -v '^[[:space:]]*#' "$HOSTS_FILE" | grep -v '^[[:space:]]*$'
 }
 
-build() {
-    zig build -Dtarget=aarch64-linux-musl -Dcpu=cortex_a76 -Dart=false -p "$PREFIX_ARM"
-    zig build -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Dart=false -p "$PREFIX_X86"
+# Network width, read from the .nnue header (u32 at byte 8).
+hidden_of() { od -An -tu4 -j8 -N4 "$1" | tr -d ' '; }
+
+build() { # [net]: build for that net's width (default 256)
+    local h=256
+    [ -n "${1:-}" ] && [ "$1" != hce ] && h=$(hidden_of "$1")
+    zig build -Dtarget=aarch64-linux-musl -Dcpu=cortex_a76 -Dart=false -Dhidden="$h" -p "$PREFIX_ARM"
+    zig build -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Dart=false -Dhidden="$h" -p "$PREFIX_X86"
 }
 
 # Copy binary, guard and net to the given hosts (default: all). Files are
@@ -44,7 +49,7 @@ deploy() {
     local net=$1
     shift
     local targets=${*:-$(hosts)}
-    build
+    build "$net"
     for h in $targets; do
         if ! $SSH "$h" "mkdir -p $REMOTE/data" 2>/dev/null; then
             echo "cluster: $h unreachable, skipping"
