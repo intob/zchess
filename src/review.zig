@@ -374,6 +374,25 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
     const o = &pw.writer;
     for (in.headers) |h| try o.print("[{s} \"{s}\"]\n", .{ h.key, h.value });
     try o.print("[Annotator \"zchess review ({d} nodes/position)\"]\n\n", .{ctx.nodes});
+    // Game summary: shown by GUIs before the first move.
+    try o.print("{{zchess review for {s}: accuracy {d:.0}%, {d} blunders, {d} mistakes, {d} inaccuracies.", .{
+        ctx.user, sum.accuracy, sum.counts[3], sum.counts[2], sum.counts[1],
+    });
+    var worst: ?usize = null;
+    for (flags.items, 0..) |f, k| {
+        if (worst == null or f.drop > flags.items[worst.?].drop) worst = k;
+    }
+    if (worst) |k| {
+        const f = flags.items[k];
+        const p = &positions.items[f.ply];
+        var sb: [16]u8 = undefined;
+        var bsb: [16]u8 = undefined;
+        var xb: [128]u8 = undefined;
+        try o.print(" Biggest moment: {d}{s} {s}, which {s}.", .{
+            p.fullmove, if (p.side == bb.WHITE) "." else "...", play.san(p, moves.items[f.ply], &sb), explain(f.label, play.san(p, evals[f.ply].best, &bsb), &xb),
+        });
+    }
+    try o.writeAll("}\n");
     var need_number = true;
     var fi: usize = 0;
     for (moves.items, 0..) |m, i| {
