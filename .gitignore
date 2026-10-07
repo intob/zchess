@@ -18,3 +18,5 @@ gauntlet-*.log
 sprt/
 bins/
 h512.log
+zig-out-x86-gauntlet/
+remote-gauntlet*.log
