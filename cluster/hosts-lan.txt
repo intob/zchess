@@ -1,0 +1,6 @@
+# Same Pis on the home LAN (faster when the laptop is at home):
+#   HOSTS_FILE=cluster/hosts-lan.txt scripts/cluster.sh status
+pi1.local
+pi2.local
+pi3.local
+pi4.local

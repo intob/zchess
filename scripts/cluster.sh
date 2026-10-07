@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Raspberry Pi cluster for self-play data generation.
-# Hosts are listed one per line in cluster/hosts.txt (ssh names, # comments ok).
+# Hosts are listed one per line in cluster/hosts.txt (ssh names, # comments ok);
+# hosts.txt uses the WireGuard overlay (works anywhere); HOSTS_FILE=cluster/hosts-lan.txt
+# uses the home LAN directly.
 #
 #   scripts/cluster.sh deploy <net>             build for Pi 5 and copy binary + net
 #   scripts/cluster.sh start <gen> <net> <nodes> [book]  deploy, then start datagen for that generation
@@ -21,8 +23,10 @@ RECORD=32
 GUARD_HIGH=${GUARD_HIGH:-75}
 GUARD_LOW=${GUARD_LOW:-68}
 
+HOSTS_FILE=${HOSTS_FILE:-cluster/hosts.txt}
+
 hosts() {
-    grep -v '^[[:space:]]*#' cluster/hosts.txt | grep -v '^[[:space:]]*$'
+    grep -v '^[[:space:]]*#' "$HOSTS_FILE" | grep -v '^[[:space:]]*$'
 }
 
 build() {

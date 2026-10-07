@@ -49,6 +49,20 @@ caffeinate -i bash -c 'PROMOTE=1 scripts/experiments.sh && GENS=5 NODES=10000 PO
 
 Note for the next training run: the default `--wdl` (0.25) is now known to be too high; use 0.1.
 
+### Pi cluster and remote access (2026-10-07)
+Four Pi 5s (`pi1`–`pi4`) generate data next to the Mac, each under a thermal
+guard (pause at 75 °C, resume at 68 °C). They dial out over WireGuard to the
+`bitch-box` hub, so the laptop reaches them from anywhere as `pi1-wg`…`pi4-wg`
+(`10.99.0.11`–`.14`). SSH is key-only, the hub can't reach them, and only the
+laptop's overlay addresses may SSH in. Nothing at home accepts inbound traffic.
+
+```
+scripts/cluster.sh status                        # from anywhere (cluster/hosts.txt = overlay)
+HOSTS_FILE=cluster/hosts-lan.txt scripts/cluster.sh status   # faster at home
+scripts/cluster.sh collect <gen>                 # stop the Pis and fetch their data
+scripts/wg-enroll-pi.sh pi5.local pi5 10.99.0.15 # add another Pi (after scripts/pi-key-only.sh)
+```
+
 ### Opening book (built 2026-10-07)
 Self-play used to start from 8–9 random moves. `zchess book` builds a book from
 the Lichess broadcast database (over-the-board tournament games, CC0):

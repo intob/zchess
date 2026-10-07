@@ -1,3 +1,7 @@
-# One ssh host per line; add the other Pis as they come online.
-pi1.local
-pi2.local
+# zchess Pis, reached over the WireGuard overlay (aliases in ~/.ssh/config).
+# Works from anywhere, including at home (via the bitch-box hub).
+# At home, HOSTS_FILE=cluster/hosts-lan.txt is faster.
+pi1-wg
+pi2-wg
+pi3-wg
+pi4-wg
