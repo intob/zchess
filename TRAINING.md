@@ -45,7 +45,7 @@ caffeinate -i bash -c 'PROMOTE=1 scripts/experiments.sh && GENS=5 NODES=10000 PO
 
 - [x] `all4-wdl10`: all four generations, WDL 0.1. **H1: +146 ± 49** vs `exp-all4` (+103 =37 −34, 174 games). **Promoted.** Search scores are far better labels than results of fast adjudicated games
 - [x] `all4-e30`: all four generations, 30 epochs. Inconclusive: −2 ± 13 after 2000 games. More epochs don't help at this data size
-- [ ] gen4: 20M @ 10k nodes with `exp-all4-wdl10`, trained on gen0–4, plus 350k positions from pi1 (staged in `data/cluster/`, appended before training). pi1 was retired at 80 °C: Pis need better cooling for sustained datagen (~200 pos/s per Pi 5 at 10k nodes)
+- [ ] gen4: 20M @ 10k nodes with `exp-all4-wdl10`, trained on gen0–4, plus 350k positions from pi1 (staged in `data/cluster/`, appended before training). pi1 was stopped at 80 °C, then brought back at 12:49 under a thermal guard (`scripts/pi-thermal-guard.sh`: pause datagen at 75 °C, resume at 68 °C) for the rest of gen4 (~200 pos/s per Pi 5 at 10k nodes while running)
 
 Note for the next training run: the default `--wdl` (0.25) is now known to be too high; use 0.1.
 

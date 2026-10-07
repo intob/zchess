@@ -1,2 +1,3 @@
 # One ssh host per line; add the other Pis as they come online.
-# pi1.local  (retired 2026-10-07: overheats under sustained load)
+pi1.local
+pi2.local
