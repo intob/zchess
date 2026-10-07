@@ -1,0 +1,40 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    // A chess engine is useless in Debug, so default to ReleaseFast.
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (default ReleaseFast)") orelse .ReleaseFast;
+
+    // Optionally embed a trained network: zig build -Dnet=nets/gen3.nnue
+    const net_path = b.option([]const u8, "net", "NNUE file to embed as the default evaluation");
+
+    const options = b.addOptions();
+    options.addOption(bool, "has_net", net_path != null);
+
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addOptions("build_options", options);
+    if (net_path) |p| mod.addAnonymousImport("default_net", .{ .root_source_file = b.path(p) });
+
+    const exe = b.addExecutable(.{ .name = "zchess", .root_module = mod });
+    b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_cmd.addArgs(args);
+    b.step("run", "Run the engine").dependOn(&run_cmd.step);
+
+    // Tests keep safety checks on (overflow, bounds) but stay fast enough for perft.
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = b.option(std.builtin.OptimizeMode, "test-optimize", "Optimization mode for tests (default ReleaseSafe)") orelse .ReleaseSafe,
+    });
+    test_mod.addOptions("build_options", options);
+    if (net_path) |p| test_mod.addAnonymousImport("default_net", .{ .root_source_file = b.path(p) });
+    const tests = b.addTest(.{ .root_module = test_mod });
+    b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(tests).step);
+}
