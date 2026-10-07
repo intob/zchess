@@ -125,7 +125,20 @@ GENS=5 NODES=10000 POSITIONS=20000000 caffeinate -i scripts/pipeline.sh
 
 (gen0–3 are skipped as already done; this produces gen4 trained on gen2–4.)
 
-### Step 3: bigger net (next, after gen5; ~70M positions by then)
+### Overnight 2026-10-07 → 08 (Mac off; everything on bitch-box and the cluster)
+- Width nets trained on all data gen0–5 (~71M positions, 15 epochs, WDL 0.1):
+  `nets/h256-all.nnue` (val loss ~0.0036) and `nets/h512-all.nnue` (val loss 0.00332).
+- bitch-box `~/zchess-overnight/run-overnight.sh` (progress.log, done): after the gen5
+  gauntlet, (1) h256-all vs gen5, 10k nodes, SPRT [0,5]: does more data alone help;
+  (2) h512-all vs h256-all, 8+0.08, SPRT [0,10]: does width pay for its speed.
+- bitch-box gauntlets (compare on this host only): gen4 ≈ 2980 (2800 70.3%,
+  3000 47.5%, 3190 27.0%); gen5 at 2800: 77.8% (gen4 70.3%), rest pending in
+  `~/zchess-gauntlet/20261007-2202-gen5`.
+- Cluster (pi1–pi5, bitch-box) generating gen6 data as services: `gen6book`, gen5 net,
+  book openings, 10k nodes. Collect in the morning: `scripts/cluster.sh collect 6book`.
+  pi6 still offline (Wi-Fi under load); its service is still on `gen5book`.
+
+### Step 3: bigger net (trained; verdict pending overnight)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
 can't compare a 512 net with a 256 net: build per size and SPRT the two binaries
 with fastchess (now installed in `~/zchess-tools`).

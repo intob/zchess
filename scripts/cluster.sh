@@ -90,7 +90,15 @@ start() {
     [ "$net" != hce ] && remote_net=$(basename "$net")
     local book_opt=""
     if [ -n "$book" ]; then
-        for h in $idle; do scp -q "$book" "$h:$REMOTE/" 2>/dev/null || true; done
+        # Skip hosts that already have an identical copy (it's 33 MB, and over
+        # the overlay it travels via the hub).
+        local sum
+        sum=$(shasum -a 256 "$book" | cut -d' ' -f1)
+        for h in $idle; do
+            if [ "$($SSH "$h" "sha256sum $REMOTE/$(basename "$book") 2>/dev/null | cut -d' ' -f1")" != "$sum" ]; then
+                scp -q "$book" "$h:$REMOTE/" 2>/dev/null || true
+            fi
+        done
         book_opt="--book $(basename "$book")"
     fi
     for h in $idle; do

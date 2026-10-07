@@ -1,0 +1,1 @@
+sprt: h512-vs-h256 (bins/h512/bin/zchess) vs base (bins/h256/bin/zchess), tc=8+0.08, SPRT [0, 10], concurrency 10 -> sprt/20261007-2224-h512-vs-h256
