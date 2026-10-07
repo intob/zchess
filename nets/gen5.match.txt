@@ -1,0 +1,4 @@
+games 1276  +460 =438 -378  Elo 22.4 +/- 15.5  LLR 2.81   
+
+A vs B: +460 =438 -378  score 53.2%  Elo 22.4 +/- 15.5
+SPRT [0, 10]: LLR 2.81 (bounds +/-2.94) inconclusive

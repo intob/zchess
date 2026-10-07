@@ -69,8 +69,14 @@ controls, so this is a consistent yardstick between nets rather than an official
 (cluster), B = random openings (Mac). Both trimmed to equal size; two nets trained
 identically on gen0–4 + A or + B; SPRT A vs B (book openings), then the winner vs gen4.
 
-- [ ] A vs B verdict
-- [ ] winner vs gen4
+- [x] A vs B (book vs random openings, 12M positions each, otherwise identical):
+  **+8.5 ± 12.6**, inconclusive after 2000 games (+706 =637 −657). The book is at
+  most a small gain; it stays the default because it keeps positions realistic.
+- [x] gen5-book vs gen4: **+22 ± 16**, SPRT crossed the H1 bound and stopped at 1276
+  games (+460 =438 −378). **Promoted as gen5** (`nets/gen5.nnue`). The run printed
+  "inconclusive": `match` judged the SPRT on the final totals, after the games still
+  in flight had pulled the LLR back to 2.81. Fixed: the decision is now fixed at the
+  moment a bound is crossed.
 - Early observation: book-opening games are drawn ~46% of the time vs ~38% from random openings.
 
 ### Pi cluster and remote access (2026-10-07)

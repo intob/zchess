@@ -84,6 +84,10 @@ const Ctx = struct {
     book: ?[]const Position,
     next: std.atomic.Value(u64) = .init(0),
     finished: std.atomic.Value(bool) = .init(false),
+    /// SPRT decision, fixed at the moment a bound is first crossed. Games that
+    /// were already in flight still finish and are counted in the totals, but
+    /// can't undo the decision (they could pull the LLR back inside the bounds).
+    decision: ?struct { h1: bool, games: u64, llr: f64 } = null,
     mutex: Io.Mutex = .init,
     stats: Stats = .{},
 };
@@ -147,8 +151,13 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     out.print("\n\nA vs B: +{d} ={d} -{d}  score {d:.1}%  Elo {d:.1} +/- {d:.1}\n", .{ s.w, s.d, s.l, s.score() * 100, e[0], e[1] });
     if (sprt) |sp| {
         const l = s.llr(sp[0], sp[1]);
-        const verdict = if (l >= LLR_BOUND) "H1 accepted (A is stronger)" else if (l <= -LLR_BOUND) "H0 accepted (A is not stronger)" else "inconclusive";
-        out.print("SPRT [{d}, {d}]: LLR {d:.2} (bounds +/-{d:.2}) {s}\n", .{ sp[0], sp[1], l, LLR_BOUND, verdict });
+        if (ctx.decision) |d| {
+            out.print("SPRT [{d}, {d}]: LLR {d:.2} at {d} games (bounds +/-{d:.2}) {s}; final LLR {d:.2} incl. games in flight\n", .{
+                sp[0], sp[1], d.llr, d.games, LLR_BOUND, if (d.h1) "H1 accepted (A is stronger)" else "H0 accepted (A is not stronger)", l,
+            });
+        } else {
+            out.print("SPRT [{d}, {d}]: LLR {d:.2} (bounds +/-{d:.2}) inconclusive\n", .{ sp[0], sp[1], l, LLR_BOUND });
+        }
     }
 }
 
@@ -205,7 +214,10 @@ fn workerImpl(ctx: *Ctx) !void {
         if (ctx.sprt) |sp| {
             const l = s.llr(sp[0], sp[1]);
             ctx.out.print("\rgames {d}  +{d} ={d} -{d}  Elo {d:.1} +/- {d:.1}  LLR {d:.2}   ", .{ s.w + s.d + s.l, s.w, s.d, s.l, e[0], e[1], l });
-            if (@abs(l) >= LLR_BOUND) ctx.finished.store(true, .monotonic);
+            if (@abs(l) >= LLR_BOUND and ctx.decision == null) {
+                ctx.decision = .{ .h1 = l > 0, .games = s.w + s.d + s.l, .llr = l };
+                ctx.finished.store(true, .monotonic);
+            }
         } else {
             ctx.out.print("\rgames {d}  +{d} ={d} -{d}  Elo {d:.1} +/- {d:.1}   ", .{ s.w + s.d + s.l, s.w, s.d, s.l, e[0], e[1] });
         }
