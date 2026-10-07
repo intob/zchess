@@ -8,6 +8,7 @@ trainer and the match runner are one binary.
 zig build                     # ReleaseFast by default
 zig build test                # unit tests (perft, NNUE incremental updates, SEE, data format)
 ./zig-out/bin/zchess play     # play against it in the terminal (--black, --time 5, hint/undo/moves)
+./zig-out/bin/zchess viz nets/gen2.nnue   # "brain scan" poster of a network -> nets/gen2.png
 ./zig-out/bin/zchess          # UCI mode: point any chess GUI at this binary
 ./zig-out/bin/zchess perft-suite
 ./zig-out/bin/zchess bench
@@ -44,11 +45,16 @@ Each generation:
 2. **train**: a float32 copy of the network is trained in Zig
    (`train.zig`). Forward and backward passes are hand-written, with AdamW,
    cosine LR decay and data parallelism over all cores. Target =
-   `0.75·sigmoid(score/400) + 0.25·result`. After every epoch the quantised
+   `0.9·sigmoid(score/400) + 0.1·result`. After every epoch the quantised
    net is checked against the float net (typically within ~2–3 cp).
 3. **match**: the new net plays the current best over colour-reversed
    pairs of openings, with Elo ± 95% CI and an optional SPRT
    (`match.zig`). It is promoted if it scores over 50%.
+
+Openings can come from real games instead of random moves:
+`zchess book --out data/book.fen <lichess .pgn.zst files>` builds a FEN book
+(streams zstd and replays the moves with the engine's own move parser), and
+`datagen`/`match` take `--book data/book.fen`.
 
 Generation 0 plays with the hand-crafted eval. Every later generation plays
 with the previous best net, so the network learns from its own games.
@@ -82,6 +88,17 @@ are 400 games at 10k nodes/move.
 
 Gains levelled off by gen3. The next steps would be more nodes per move in
 datagen, more positions per generation, and a wider hidden layer.
+
+## Visualisations
+
+- `zig build` also writes `zig-out/zchess.png`. The binary hashes itself, plays a
+  short game seeded by that hash and draws the final position (`src/art.zig`).
+- `zchess viz <net.nnue> [--fen <fen>]` renders a poster of a network
+  (`src/viz.zig`). It shows the two accumulators as brain hemispheres, with every
+  hidden neuron glowing by its contribution to the evaluation of a real position,
+  and fibres from pieces to neurons and from neurons to the output. Below that are
+  the piece values and square tables the network learned, measured by adding
+  pieces to real positions. The training scripts render one for every new net.
 
 ## Formats
 

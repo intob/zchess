@@ -23,6 +23,7 @@ const help =
     \\  --threads <n>        concurrent games (default: all cores)
     \\  --sprt <e0,e1>       stop early when SPRT(elo0, elo1) concludes, alpha = beta = 0.05
     \\  --seed <n>           opening seed (default 1)
+    \\  --book <file>        openings from a FEN file (see `zchess book`) instead of random moves
     \\
 ;
 
@@ -80,6 +81,7 @@ const Ctx = struct {
     nodes: u64,
     seed: u64,
     sprt: ?[2]f64,
+    book: ?[]const Position,
     next: std.atomic.Value(u64) = .init(0),
     finished: std.atomic.Value(bool) = .init(false),
     mutex: Io.Mutex = .init,
@@ -97,8 +99,10 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var threads: usize = std.Thread.getCpuCount() catch 4;
     var sprt: ?[2]f64 = null;
     var seed: u64 = 1;
+    var book_path: []const u8 = "";
     while (p.next()) |a| {
         if (p.flag(a, "--a")) |v| a_path = v
+        else if (p.flag(a, "--book")) |v| book_path = v
         else if (p.flag(a, "--b")) |v| b_path = v
         else if (p.int(u64, a, "--games")) |v| games = @max(v, 2)
         else if (p.int(u64, a, "--nodes")) |v| nodes = v
@@ -129,6 +133,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         .nodes = nodes,
         .seed = seed,
         .sprt = sprt,
+        .book = if (book_path.len > 0) try @import("book.zig").load(gpa, io, book_path) else null,
     };
     out.print("match: A={s} vs B={s}, {d} games, {d} nodes/move, {d} threads\n", .{ a_path, b_path, ctx.pairs * 2, nodes, threads });
 
@@ -169,7 +174,7 @@ fn workerImpl(ctx: *Ctx) !void {
         if (pair >= ctx.pairs) break;
         // The opening depends only on the seed and pair index, so reruns are reproducible.
         var prng = std.Random.DefaultPrng.init(ctx.seed *% 0x9E3779B97F4A7C15 +% pair);
-        const opening = game.balancedOpening(prng.random(), sa, 200);
+        const opening = game.balancedOpening(prng.random(), sa, 200, ctx.book);
 
         var pair_stats = Stats{};
         for (0..2) |round| {

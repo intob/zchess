@@ -4,3 +4,10 @@ data/
 *.ckpt
 pipeline.log
 experiments.log
+nets/*.png
+.DS_Store
+run2.log
+zig-out-pi/
+data/cluster/
+gauntlet/
+gauntlet.log

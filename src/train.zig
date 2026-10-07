@@ -35,7 +35,7 @@ const help =
     \\  --epochs <n>       passes over the data (default 10)
     \\  --batch <n>        positions per batch (default 16384)
     \\  --lr <x>           initial learning rate, cosine-decayed to 2% (default 0.001)
-    \\  --wdl <x>          weight of game result vs. search score in the target (default 0.25)
+    \\  --wdl <x>          weight of game result vs. search score in the target (default 0.1)
     \\  --threads <n>      worker threads (default: all cores)
     \\  --init <ckpt>      start from a float checkpoint instead of random weights
     \\  --seed <n>         shuffle/initialisation seed (default 1)
@@ -283,7 +283,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var epochs: usize = 10;
     var batch_size: usize = 16384;
     var lr: f32 = 0.001;
-    var wdl: f32 = 0.25;
+    var wdl: f32 = 0.1;
     var threads: usize = std.Thread.getCpuCount() catch 4;
     var init_path: []const u8 = "";
     var seed: u64 = 1;

@@ -87,7 +87,7 @@ fn normalize(s: []const u8, buf: *[16]u8) []const u8 {
     return buf[0..n];
 }
 
-fn parseMove(pos: *const Position, input: []const u8) ?Move {
+pub fn parseMove(pos: *const Position, input: []const u8) ?Move {
     if (movegen.parseUci(pos, input)) |m| return m;
     var nb: [16]u8 = undefined;
     const want = normalize(input, &nb);

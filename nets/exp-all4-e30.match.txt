@@ -1,0 +1,4 @@
+games 2000  +747 =493 -760  Elo -2.3 +/- 13.2  LLR -1.60   
+
+A vs B: +747 =493 -760  score 49.7%  Elo -2.3 +/- 13.2
+SPRT [0, 10]: LLR -1.60 (bounds +/-2.94) inconclusive

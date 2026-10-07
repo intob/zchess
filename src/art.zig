@@ -13,12 +13,13 @@ const game = @import("game.zig");
 const cli = @import("cli.zig");
 const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
+const canvas = @import("canvas.zig");
 
 const Position = position.Position;
 const Move = position.Move;
 
 // 16x16 sprites: 'o' outline, 'x' fill, anything else transparent.
-const sprites = [6][16]*const [16]u8{
+pub const sprites = [6][16]*const [16]u8{
     .{ // pawn
         "................",
         "................",
@@ -145,38 +146,9 @@ const TEXT_SCALE = 4;
 const W = BOARD + 2 * MARGIN;
 const H = MARGIN + BOARD + 24 + 5 * TEXT_SCALE + 28;
 
-const Rgb = [3]u8;
-
-fn hsv(h: f32, s: f32, v: f32) Rgb {
-    const hh = @mod(h, 1.0) * 6.0;
-    const c = v * s;
-    const x = c * (1 - @abs(@mod(hh, 2.0) - 1));
-    const m = v - c;
-    const rgb: [3]f32 = switch (@as(u32, @intFromFloat(hh))) {
-        0 => .{ c, x, 0 },
-        1 => .{ x, c, 0 },
-        2 => .{ 0, c, x },
-        3 => .{ 0, x, c },
-        4 => .{ x, 0, c },
-        else => .{ c, 0, x },
-    };
-    var out: Rgb = undefined;
-    for (0..3) |i| out[i] = @intFromFloat(@round((rgb[i] + m) * 255));
-    return out;
-}
-
-const Image = struct {
-    px: []u8,
-
-    fn set(img: *Image, x: usize, y: usize, c: Rgb) void {
-        const i = (y * W + x) * 3;
-        @memcpy(img.px[i..][0..3], &c);
-    }
-
-    fn rect(img: *Image, x0: usize, y0: usize, w: usize, h: usize, c: Rgb) void {
-        for (y0..y0 + h) |y| for (x0..x0 + w) |x| img.set(x, y, c);
-    }
-};
+const Rgb = canvas.Rgb;
+const hsv = canvas.hsv;
+const Image = canvas.Canvas;
 
 const Palette = struct {
     bg: Rgb,
@@ -275,52 +247,6 @@ fn render(img: *Image, pos: *const Position, last: Move, h: [32]u8) void {
     }
 }
 
-fn writeChunk(w: *Io.Writer, kind: *const [4]u8, data: []const u8) !void {
-    var len: [4]u8 = undefined;
-    std.mem.writeInt(u32, &len, @intCast(data.len), .big);
-    try w.writeAll(&len);
-    try w.writeAll(kind);
-    try w.writeAll(data);
-    var crc = std.hash.Crc32.init();
-    crc.update(kind);
-    crc.update(data);
-    var c: [4]u8 = undefined;
-    std.mem.writeInt(u32, &c, crc.final(), .big);
-    try w.writeAll(&c);
-}
-
-fn encodePng(gpa: std.mem.Allocator, img: *const Image, w: *Io.Writer) !void {
-    // Raw scanlines, each prefixed with filter type 0.
-    const stride = W * 3;
-    const raw = try gpa.alloc(u8, H * (stride + 1));
-    defer gpa.free(raw);
-    for (0..H) |y| {
-        raw[y * (stride + 1)] = 0;
-        @memcpy(raw[y * (stride + 1) + 1 ..][0..stride], img.px[y * stride ..][0..stride]);
-    }
-
-    var z: Io.Writer.Allocating = try .initCapacity(gpa, 64 * 1024);
-    defer z.deinit();
-    const window = try gpa.alloc(u8, std.compress.flate.max_window_len);
-    defer gpa.free(window);
-    var comp = try std.compress.flate.Compress.init(&z.writer, window, .zlib, .default);
-    try comp.writer.writeAll(raw);
-    try comp.finish();
-
-    try w.writeAll("\x89PNG\r\n\x1a\n");
-    var ihdr: [13]u8 = undefined;
-    std.mem.writeInt(u32, ihdr[0..4], W, .big);
-    std.mem.writeInt(u32, ihdr[4..8], H, .big);
-    ihdr[8] = 8; // bit depth
-    ihdr[9] = 2; // truecolour RGB
-    ihdr[10] = 0;
-    ihdr[11] = 0;
-    ihdr[12] = 0;
-    try writeChunk(w, "IHDR", &ihdr);
-    try writeChunk(w, "IDAT", z.written());
-    try writeChunk(w, "IEND", "");
-}
-
 pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const u8) !void {
     if (args.len != 2) {
         out.print("usage: zchess art <file-to-hash> <out.png>\n", .{});
@@ -332,16 +258,10 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     std.crypto.hash.sha2.Sha256.hash(bytes, &h, .{});
 
     const dream = try dreamGame(gpa, io, h);
-    var img = Image{ .px = try gpa.alloc(u8, W * H * 3) };
-    defer gpa.free(img.px);
+    var img = try Image.init(gpa, W, H, .{ 0, 0, 0 });
+    defer img.deinit(gpa);
     render(&img, &dream.pos, dream.last, h);
-
-    const f = try Io.Dir.cwd().createFile(io, args[1], .{});
-    defer f.close(io);
-    var buf: [65536]u8 = undefined;
-    var fw = f.writer(io, &buf);
-    try encodePng(gpa, &img, &fw.interface);
-    try fw.interface.flush();
+    try img.savePng(gpa, io, args[1]);
 
     var fen_buf: [128]u8 = undefined;
     out.print("{s}: {x} -> {s}\n", .{ args[1], h[0..8], dream.pos.toFen(&fen_buf) });

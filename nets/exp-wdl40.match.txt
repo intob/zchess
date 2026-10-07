@@ -1,0 +1,4 @@
+games 256  +60 =53 -143  Elo -116.9 +/- 39.7  LLR -3.63   
+
+A vs B: +60 =53 -143  score 33.8%  Elo -116.9 +/- 39.7
+SPRT [0, 10]: LLR -3.63 (bounds +/-2.94) H0 accepted (A is not stronger)

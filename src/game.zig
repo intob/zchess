@@ -79,11 +79,27 @@ pub const Adjudicator = struct {
     }
 };
 
-/// Pick a random opening whose evaluation is roughly balanced.
-pub fn balancedOpening(rng: std.Random, s: *search.Searcher, max_abs: i32) Position {
+/// Pick a random opening whose evaluation is roughly balanced: a book position
+/// (plus up to one random move, for variety) when a book is given, otherwise
+/// 8-9 random moves from the start position.
+pub fn balancedOpening(rng: std.Random, s: *search.Searcher, max_abs: i32, book: ?[]const Position) Position {
     while (true) {
-        const plies = 8 + rng.uintLessThan(usize, 2);
-        const pos = randomOpening(rng, plies) orelse continue;
+        var pos: Position = undefined;
+        if (book) |positions| {
+            pos = positions[rng.uintLessThan(usize, positions.len)];
+            if (rng.boolean()) {
+                var list = movegen.MoveList{};
+                movegen.generate(&pos, &list, .all);
+                if (list.len == 0) continue;
+                pos = pos.makeMove(list.moves[rng.uintLessThan(usize, list.len)]);
+            }
+            var list = movegen.MoveList{};
+            movegen.generate(&pos, &list, .all);
+            if (list.len == 0) continue;
+        } else {
+            const plies = 8 + rng.uintLessThan(usize, 2);
+            pos = randomOpening(rng, plies) orelse continue;
+        }
         s.tt.clear();
         s.setPosition(&pos, &.{});
         const r = s.search(.{ .soft_nodes = 4000, .nodes = 40000 });

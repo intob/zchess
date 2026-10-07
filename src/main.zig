@@ -11,6 +11,8 @@ const train = @import("train.zig");
 const match = @import("match.zig");
 const play = @import("play.zig");
 const art = @import("art.zig");
+const viz = @import("viz.zig");
+const book = @import("book.zig");
 const cli = @import("cli.zig");
 const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
@@ -30,6 +32,8 @@ const usage =
     \\  train           train an NNUE network               (train --help)
     \\  match           play two evaluations against each other (match --help)
     \\  art <file> <png> render fingerprint art from a file's hash (run by zig build)
+    \\  viz <net.nnue>  render a "brain scan" poster of a network (viz --help)
+    \\  book            build an opening book from PGN / Lichess .pgn.zst (book --help)
     \\
 ;
 
@@ -39,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     atk.init();
 
     var out_buf: [8192]u8 = undefined;
-    var fw = Io.File.stdout().writer(io, &out_buf);
+    var fw = Io.File.stdout().writerStreaming(io, &out_buf);
     var out = Output{ .io = io, .writer = &fw.interface };
 
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -73,6 +77,10 @@ pub fn main(init: std.process.Init) !void {
         try datagen.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "train")) {
         try train.run(gpa, io, &out, rest);
+    } else if (std.mem.eql(u8, cmd, "book")) {
+        try book.run(gpa, io, &out, rest);
+    } else if (std.mem.eql(u8, cmd, "viz")) {
+        try viz.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "art")) {
         try art.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "play")) {
@@ -133,4 +141,6 @@ test {
     _ = @import("data.zig");
     _ = play;
     _ = art;
+    _ = viz;
+    _ = book;
 }

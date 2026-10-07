@@ -25,6 +25,7 @@ const help =
     \\  --threads <n>      worker threads (default: all cores)
     \\  --net <file|hce>   evaluation to play with (default: embedded net, else hce)
     \\  --seed <n>         random seed (default: from the clock)
+    \\  --book <file>      start games from positions in this FEN file (see `zchess book`)
     \\
 ;
 
@@ -32,6 +33,7 @@ const Ctx = struct {
     io: Io,
     gpa: std.mem.Allocator,
     net: ?*const nnue.Network,
+    book: ?[]const Position,
     file: Io.File,
     offset: u64,
     mutex: Io.Mutex = .init,
@@ -69,6 +71,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var threads: usize = std.Thread.getCpuCount() catch 4;
     var net_path: []const u8 = "";
     var seed: u64 = @truncate(@as(u96, @bitCast(Io.Clock.real.now(io).toNanoseconds())));
+    var book_path: []const u8 = "";
     while (p.next()) |a| {
         if (p.flag(a, "--out")) |v| out_path = v
         else if (p.int(u64, a, "--positions")) |v| target = v
@@ -76,6 +79,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         else if (p.int(usize, a, "--threads")) |v| threads = @max(v, 1)
         else if (p.flag(a, "--net")) |v| net_path = v
         else if (p.int(u64, a, "--seed")) |v| seed = v
+        else if (p.flag(a, "--book")) |v| book_path = v
         else {
             out.print("{s}", .{help});
             return;
@@ -87,14 +91,15 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     }
 
     const net = try cli.loadNet(gpa, io, net_path);
+    const book: ?[]const Position = if (book_path.len > 0) try @import("book.zig").load(gpa, io, book_path) else null;
     const file = try Io.Dir.cwd().createFile(io, out_path, .{ .truncate = false });
     defer file.close(io);
     const start_len = try file.length(io);
     const offset = start_len - start_len % @sizeOf(Record);
 
-    var ctx = Ctx{ .io = io, .gpa = gpa, .net = net, .file = file, .offset = offset, .target = target, .nodes = nodes, .seed = seed };
-    out.print("datagen: {d} positions, {d} nodes/move, {d} threads, eval {s}, appending to {s} ({d} existing records)\n", .{
-        target, nodes, threads, if (net != null) "nnue" else "hce", out_path, offset / @sizeOf(Record),
+    var ctx = Ctx{ .io = io, .gpa = gpa, .net = net, .book = book, .file = file, .offset = offset, .target = target, .nodes = nodes, .seed = seed };
+    out.print("datagen: {d} positions, {d} nodes/move, {d} threads, eval {s}, openings {s}, appending to {s} ({d} existing records)\n", .{
+        target, nodes, threads, if (net != null) "nnue" else "hce", if (book != null) book_path else "random", out_path, offset / @sizeOf(Record),
     });
 
     const t0 = Io.Clock.awake.now(io);
@@ -145,7 +150,7 @@ fn workerImpl(ctx: *Ctx, tid: usize) !void {
     defer recs.deinit(ctx.gpa);
 
     while (!ctx.done()) {
-        var pos = game.balancedOpening(rng, s, 300);
+        var pos = game.balancedOpening(rng, s, 300, ctx.book);
         tt.clear();
         s.clearHistory();
         keys.clearRetainingCapacity();
