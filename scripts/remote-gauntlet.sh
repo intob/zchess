@@ -19,7 +19,7 @@ LEVELS=${LEVELS:-"2800 3000 3190"}
 GAMES=${GAMES:-200}
 TC=${TC:-10+0.1}
 CONC=${CONC:-3}
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=8"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 hidden_of() { od -An -tu4 -j8 -N4 "$1" | tr -d ' '; }
 
 start() {

@@ -17,7 +17,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 REMOTE=zchess
 PREFIX_ARM=zig-out-pi   # Raspberry Pi 5 (Cortex-A76)
 PREFIX_X86=zig-out-x86  # x86-64 cloud VMs (AVX2 baseline)

@@ -17,7 +17,7 @@ IP=$3
 HUB=bitch-box
 HUB_PUBKEY=${HUB_PUBKEY:?the hub\'s WireGuard public key (sudo wg show wg0 public-key on the hub)}
 HUB_ENDPOINT=${HUB_ENDPOINT:?the hub\'s public address and WireGuard port, host:port}
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=8"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 
 auth=$($SSH "$LAN" 'sudo -n sshd -T | awk "/^passwordauthentication/{print \$2}"')
 if [ "$auth" != no ]; then
