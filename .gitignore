@@ -3,3 +3,4 @@ zig-out/
 data/
 *.ckpt
 pipeline.log
+experiments.log

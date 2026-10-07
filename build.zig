@@ -22,6 +22,18 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{ .name = "zchess", .root_module = mod });
     b.installArtifact(exe);
 
+    // Fingerprint art: the new binary hashes itself, plays a short game seeded
+    // by the hash and renders the final position to zig-out/zchess.png.
+    // Only possible when the binary can run on this machine.
+    const want_art = b.option(bool, "art", "Render zig-out/zchess.png from the binary's hash (default true)") orelse true;
+    if (want_art and target.query.isNative()) {
+        const art = b.addRunArtifact(exe);
+        art.addArg("art");
+        art.addFileArg(exe.getEmittedBin());
+        const png = art.addOutputFileArg("zchess.png");
+        b.getInstallStep().dependOn(&b.addInstallFile(png, "zchess.png").step);
+    }
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);

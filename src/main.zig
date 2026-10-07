@@ -10,6 +10,7 @@ const datagen = @import("datagen.zig");
 const train = @import("train.zig");
 const match = @import("match.zig");
 const play = @import("play.zig");
+const art = @import("art.zig");
 const cli = @import("cli.zig");
 const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
@@ -28,6 +29,7 @@ const usage =
     \\  datagen         generate self-play training data   (datagen --help)
     \\  train           train an NNUE network               (train --help)
     \\  match           play two evaluations against each other (match --help)
+    \\  art <file> <png> render fingerprint art from a file's hash (run by zig build)
     \\
 ;
 
@@ -71,6 +73,8 @@ pub fn main(init: std.process.Init) !void {
         try datagen.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "train")) {
         try train.run(gpa, io, &out, rest);
+    } else if (std.mem.eql(u8, cmd, "art")) {
+        try art.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "play")) {
         try play.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "match")) {
@@ -128,4 +132,5 @@ test {
     _ = search;
     _ = @import("data.zig");
     _ = play;
+    _ = art;
 }
