@@ -8,6 +8,7 @@ const Io = std.Io;
 const position = @import("position.zig");
 const movegen = @import("movegen.zig");
 const play = @import("play.zig");
+const pgn = @import("pgn.zig");
 const cli = @import("cli.zig");
 const Output = @import("output.zig").Output;
 
@@ -39,18 +40,6 @@ const Stats = struct {
     positions: u64 = 0,
 };
 
-/// Per-game header state.
-const Game = struct {
-    white_elo: u32 = 0,
-    black_elo: u32 = 0,
-    standard: bool = true,
-    in_moves: bool = false,
-
-    fn reset(g: *Game) void {
-        g.* = .{};
-    }
-};
-
 const Builder = struct {
     gpa: std.mem.Allocator,
     opts: Options,
@@ -58,74 +47,24 @@ const Builder = struct {
     seen: std.AutoHashMap(u64, void),
     out: *Io.Writer,
     stats: Stats = .{},
-    game: Game = .{},
-    moves: std.ArrayList(u8) = .empty,
 
-    fn headerValue(text: []const u8) ?[]const u8 {
-        const q1 = std.mem.indexOfScalar(u8, text, '"') orelse return null;
-        const q2 = std.mem.lastIndexOfScalar(u8, text, '"') orelse return null;
-        if (q2 <= q1) return null;
-        return text[q1 + 1 .. q2];
+    fn elo(g: *const pgn.Game, key: []const u8) u32 {
+        return std.fmt.parseInt(u32, g.header(key) orelse "0", 10) catch 0;
     }
 
-    fn line(b: *Builder, raw: []const u8) !void {
-        const l = std.mem.trimEnd(u8, raw, "\r");
-        if (l.len > 0 and l[0] == '[') {
-            // A header after movetext starts a new game.
-            if (b.game.in_moves) try b.finishGame();
-            if (std.mem.startsWith(u8, l, "[WhiteElo ")) b.game.white_elo = std.fmt.parseInt(u32, headerValue(l) orelse "0", 10) catch 0;
-            if (std.mem.startsWith(u8, l, "[BlackElo ")) b.game.black_elo = std.fmt.parseInt(u32, headerValue(l) orelse "0", 10) catch 0;
-            if (std.mem.startsWith(u8, l, "[Variant ")) {
-                const v = headerValue(l) orelse "";
-                if (!std.ascii.eqlIgnoreCase(v, "standard")) b.game.standard = false;
-            }
-            // Games from a custom start position (Chess960, studies) don't fit.
-            if (std.mem.startsWith(u8, l, "[SetUp \"1\"") or std.mem.startsWith(u8, l, "[FEN ")) b.game.standard = false;
-            return;
-        }
-        if (l.len == 0) return;
-        b.game.in_moves = true;
-        try b.moves.appendSlice(b.gpa, l);
-        try b.moves.append(b.gpa, ' ');
-    }
-
-    fn finishGame(b: *Builder) !void {
-        defer {
-            b.game.reset();
-            b.moves.clearRetainingCapacity();
-        }
+    fn onGame(b: *Builder, g: *const pgn.Game) !void {
         b.stats.games += 1;
-        if (!b.game.standard) return;
-        if (b.opts.min_elo > 0 and (b.game.white_elo < b.opts.min_elo or b.game.black_elo < b.opts.min_elo)) return;
+        if (!g.isStandard()) return;
+        if (b.opts.min_elo > 0 and (elo(g, "WhiteElo") < b.opts.min_elo or elo(g, "BlackElo") < b.opts.min_elo)) return;
 
         var candidates: [64]Position = undefined;
         var n_cand: usize = 0;
         var pos = Position.startpos();
         var ply: usize = 0;
-        var depth: usize = 0; // comment/variation nesting
-        var it = std.mem.tokenizeAny(u8, b.moves.items, " \t\n");
-        while (it.next()) |tok_raw| {
+        var it = pgn.SanIterator.init(g.movetext);
+        while (it.next()) |san| {
             if (ply >= b.opts.max_ply) break;
-            var tok = tok_raw;
-            // Skip { comments } and ( variations ); tokens may straddle the brackets.
-            if (depth > 0 or tok[0] == '{' or tok[0] == '(') {
-                for (tok) |ch| switch (ch) {
-                    '{', '(' => depth += 1,
-                    '}', ')' => depth -|= 1,
-                    else => {},
-                };
-                continue;
-            }
-            if (tok[0] == '$') continue; // NAG
-            // Move numbers: "12." or "12..." possibly glued to the move ("12.e4").
-            if (std.ascii.isDigit(tok[0])) {
-                if (std.mem.eql(u8, tok, "1-0") or std.mem.eql(u8, tok, "0-1") or std.mem.eql(u8, tok, "1/2-1/2")) break;
-                const dot = std.mem.lastIndexOfScalar(u8, tok, '.') orelse continue;
-                tok = tok[dot + 1 ..];
-                if (tok.len == 0) continue;
-            }
-            if (std.mem.eql(u8, tok, "*")) break;
-            const m = play.parseMove(&pos, tok) orelse {
+            const m = play.parseMove(&pos, san) orelse {
                 b.stats.bad_moves += 1;
                 return;
             };
@@ -159,21 +98,7 @@ const Builder = struct {
     }
 
     fn readAll(b: *Builder, r: *Io.Reader) !void {
-        while (true) {
-            const l = r.takeDelimiter('\n') catch |err| switch (err) {
-                error.StreamTooLong => {
-                    // Absurdly long line: drop it and the game it belongs to.
-                    _ = try r.discardDelimiterInclusive('\n');
-                    b.game.standard = false;
-                    continue;
-                },
-                else => return err,
-            } orelse break;
-            try b.line(l);
-        }
-        if (b.game.in_moves) try b.finishGame();
-        b.game.reset();
-        b.moves.clearRetainingCapacity();
+        try pgn.readGames(b.gpa, r, b, onGame);
     }
 };
 
@@ -210,7 +135,6 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var prng = std.Random.DefaultPrng.init(seed);
     var b = Builder{ .gpa = gpa, .opts = opts, .rng = prng.random(), .seen = .init(gpa), .out = &ow.interface };
     defer b.seen.deinit();
-    defer b.moves.deinit(gpa);
 
     const window = try gpa.alloc(u8, std.compress.zstd.default_window_len + std.compress.zstd.block_size_max);
     defer gpa.free(window);
@@ -263,8 +187,7 @@ test "pgn parsing" {
     var prng = std.Random.DefaultPrng.init(1);
     var b = Builder{ .gpa = gpa, .opts = .{ .min_elo = 2000, .min_ply = 4, .max_ply = 6, .per_game = 10 }, .rng = prng.random(), .seen = .init(gpa), .out = &w };
     defer b.seen.deinit();
-    defer b.moves.deinit(gpa);
-    const pgn =
+    const sample =
         \\[Event "Test"]
         \\[WhiteElo "2500"]
         \\[BlackElo "2400"]
@@ -279,7 +202,7 @@ test "pgn parsing" {
         \\1. d4 d5 2. c4 e6 3. Nc3 Nf6 1-0
         \\
     ;
-    var r: Io.Reader = .fixed(pgn);
+    var r: Io.Reader = .fixed(sample);
     try b.readAll(&r);
     try std.testing.expectEqual(@as(u64, 2), b.stats.games);
     try std.testing.expectEqual(@as(u64, 1), b.stats.accepted);

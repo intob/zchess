@@ -11,3 +11,7 @@ zig-out-pi/
 data/cluster/
 gauntlet/
 gauntlet.log
+zig-out-x86/
+ab.log
+config.json
+gauntlet-*.log

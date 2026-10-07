@@ -13,6 +13,7 @@ const play = @import("play.zig");
 const art = @import("art.zig");
 const viz = @import("viz.zig");
 const book = @import("book.zig");
+const review = @import("review.zig");
 const cli = @import("cli.zig");
 const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
@@ -34,6 +35,7 @@ const usage =
     \\  art <file> <png> render fingerprint art from a file's hash (run by zig build)
     \\  viz <net.nnue>  render a "brain scan" poster of a network (viz --help)
     \\  book            build an opening book from PGN / Lichess .pgn.zst (book --help)
+    \\  review          review a player's games: mistakes, blunders, annotated PGN (review --help)
     \\
 ;
 
@@ -77,6 +79,8 @@ pub fn main(init: std.process.Init) !void {
         try datagen.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "train")) {
         try train.run(gpa, io, &out, rest);
+    } else if (std.mem.eql(u8, cmd, "review")) {
+        try review.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "book")) {
         try book.run(gpa, io, &out, rest);
     } else if (std.mem.eql(u8, cmd, "viz")) {
@@ -143,4 +147,6 @@ test {
     _ = art;
     _ = viz;
     _ = book;
+    _ = @import("pgn.zig");
+    _ = review;
 }

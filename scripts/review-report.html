@@ -1,0 +1,711 @@
+<title>fingjoey Game Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an annotated scoresheet. The finding first, then a trainer built
+   from your own positions, then the patterns, then the game ledger. */
+:root {
+  --paper: #f2f4f6;
+  --sheet: #ffffff;
+  --ink: #1b222c;
+  --muted: #5b6676;
+  --line: #d6dce4;
+  --accent: #2753c9;
+  --accent-soft: rgba(39, 83, 201, .12);
+  --blunder: #c0392b;
+  --mistake: #d4761c;
+  --inacc: #b8920f;
+  --good: #23824f;
+  --sq-light: #dfe5ec;
+  --sq-dark: #8597ad;
+  --piece-white: #f8f8f4;
+  --piece-black: #262a31;
+  --piece-line: #12151a;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #11151b; --sheet: #181d25; --ink: #e5e9ef; --muted: #98a3b3; --line: #2a323e;
+    --accent: #86a6ff; --accent-soft: rgba(134, 166, 255, .16);
+    --blunder: #ee6b5c; --mistake: #f0a050; --inacc: #e2c14f; --good: #5cc48a;
+    --sq-light: #a7b3c2; --sq-dark: #5b6b80; --piece-white: #f4f4ef; --piece-black: #1d2026; --piece-line: #0b0d10;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #11151b; --sheet: #181d25; --ink: #e5e9ef; --muted: #98a3b3; --line: #2a323e;
+  --accent: #86a6ff; --accent-soft: rgba(134, 166, 255, .16);
+  --blunder: #ee6b5c; --mistake: #f0a050; --inacc: #e2c14f; --good: #5cc48a;
+  --sq-light: #a7b3c2; --sq-dark: #5b6b80; --piece-white: #f4f4ef; --piece-black: #1d2026; --piece-line: #0b0d10;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--paper); color: var(--ink); font: 15px/1.55 var(--body); }
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: 20px; padding-block: 36px 64px; display: grid; gap: 44px; }
+h1, h2 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.08; font-weight: 700; max-width: 22ch; }
+h2 { font-size: 24px; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 500 12px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 18px; color: var(--muted); max-width: 62ch; margin-top: 14px; }
+.lede strong { color: var(--ink); font-weight: 600; }
+section { display: grid; gap: 18px; }
+.section-head { display: grid; gap: 6px; }
+.section-head p { color: var(--muted); max-width: 62ch; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* Headline figures */
+.figures { display: flex; flex-wrap: wrap; gap: 12px 36px; margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--line); }
+.figure { display: grid; gap: 2px; }
+.figure b { font: 600 26px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.figure span { font-size: 13px; color: var(--muted); }
+
+/* Trainer */
+.trainer { display: grid; grid-template-columns: minmax(0, 480px) minmax(0, 1fr); gap: 28px; align-items: start; background: var(--sheet); border: 1px solid var(--line); border-radius: 10px; padding: 22px; }
+@media (max-width: 820px) { .trainer { grid-template-columns: minmax(0, 1fr); } }
+.board-box { position: relative; width: 100%; max-width: 480px; aspect-ratio: 1; }
+#board { width: 100%; height: 100%; display: block; border-radius: 4px; touch-action: none; box-shadow: 0 1px 0 var(--line), 0 10px 30px -18px rgba(0, 0, 0, .45); }
+#board:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.panel { display: grid; gap: 16px; min-width: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font: 500 13px var(--body); border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--sheet); border-color: var(--ink); }
+.chip:focus-visible, button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kind { display: inline-flex; align-items: center; gap: 8px; font: 500 12px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.kind i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.prompt { font: 600 21px/1.3 var(--display); }
+.context { color: var(--muted); font-size: 14px; }
+.context a { color: var(--accent); }
+.feedback { min-height: 3.2em; padding: 12px 14px; border-radius: 8px; background: var(--paper); border: 1px solid var(--line); font-size: 15px; }
+.feedback.ok { border-color: var(--good); }
+.feedback.no { border-color: var(--blunder); }
+.feedback .line { font-family: var(--mono); font-size: 14px; display: block; margin-top: 6px; color: var(--muted); overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.btn { font: 600 14px var(--body); border-radius: 8px; padding: 9px 14px; border: 1px solid var(--line); background: var(--sheet); color: var(--ink); cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--sheet); }
+.btn:disabled { opacity: .45; cursor: default; }
+.progress { margin-left: auto; font: 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: no-preference) { .shake { animation: shake .3s; } }
+@keyframes shake { 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+
+/* Patterns */
+.patterns { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 28px; }
+@media (max-width: 820px) { .patterns { grid-template-columns: minmax(0, 1fr); } }
+.bars { display: grid; gap: 10px; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 13em) minmax(0, 1fr) 3ch; gap: 12px; align-items: center; font-size: 14px; }
+.bar-track { height: 12px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.bar-row.top .bar-fill { background: var(--blunder); }
+.bar-row .num { text-align: right; }
+.phase-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.phase-table th, .phase-table td { text-align: left; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.phase-table th { font: 500 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.phase-table td.num, .phase-table th.r { text-align: right; }
+
+/* Ledger */
+.ledger { display: grid; gap: 8px; }
+details.game { background: var(--sheet); border: 1px solid var(--line); border-radius: 8px; }
+details.game > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 6.5em minmax(0, 1fr) 4.5em 5em 7.5em minmax(90px, 160px); gap: 12px; align-items: center; padding: 10px 14px; }
+details.game > summary::-webkit-details-marker { display: none; }
+@media (max-width: 720px) { details.game > summary { grid-template-columns: 6.5em minmax(0, 1fr) 4.5em; } .hide-sm { display: none; } }
+.opp { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opp small { color: var(--muted); font-family: var(--mono); }
+.side { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--piece-line); margin-right: 6px; vertical-align: -1px; }
+.side.w { background: var(--piece-white); } .side.b { background: var(--piece-black); }
+.result { font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+.result.win { color: var(--good); } .result.loss { color: var(--blunder); } .result.draw { color: var(--muted); }
+.marks { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+.marks .b { color: var(--blunder); } .marks .m { color: var(--mistake); } .marks .i { color: var(--inacc); }
+.spark { width: 100%; height: 34px; display: block; }
+.game-body { padding: 4px 14px 14px; display: grid; gap: 8px; border-top: 1px solid var(--line); }
+.flag { display: grid; grid-template-columns: 5.5em minmax(0, 1fr) auto; gap: 10px; align-items: baseline; font-size: 14px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.flag:last-child { border-bottom: 0; }
+.flag .mv { font-family: var(--mono); }
+.flag .mv .b { color: var(--blunder); } .flag .mv .m { color: var(--mistake); } .flag .mv .i { color: var(--inacc); }
+.flag .why { min-width: 0; }
+.flag .why small { color: var(--muted); font-family: var(--mono); }
+.flag button { font: 500 12px var(--body); border: 1px solid var(--line); background: transparent; color: var(--accent); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+.game-link { font-size: 13px; color: var(--accent); }
+.empty { color: var(--muted); font-size: 14px; padding: 6px 0; }
+
+footer { color: var(--muted); font-size: 13px; display: grid; gap: 6px; max-width: 75ch; border-top: 1px solid var(--line); padding-top: 18px; }
+footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+</style>
+
+<main class="wrap">
+  <header>
+    <div class="eyebrow" id="eyebrow"></div>
+    <h1 id="headline"></h1>
+    <p class="lede" id="lede"></p>
+    <div class="figures" id="figures"></div>
+  </header>
+
+  <section id="practice" aria-labelledby="practice-title">
+    <div class="section-head">
+      <h2 id="practice-title">Practice your own mistakes</h2>
+      <p>Every position here comes from one of your games. <b>Find the win</b>: you had something much better than what you played. <b>Spot the threat</b>: your move left something open; find how your opponent punishes it. Click a piece, then the square it should go to.</p>
+    </div>
+    <div class="trainer">
+      <div class="board-box"><canvas id="board" width="512" height="512" tabindex="0" aria-label="Chess board"></canvas></div>
+      <div class="panel">
+        <div class="chips" role="group" aria-label="Puzzle type">
+          <button class="chip" id="f-all" aria-pressed="true" data-filter="all">All</button>
+          <button class="chip" id="f-find" aria-pressed="false" data-filter="find">Find the win</button>
+          <button class="chip" id="f-threat" aria-pressed="false" data-filter="threat">Spot the threat</button>
+        </div>
+        <div class="kind" id="p-kind"></div>
+        <div class="prompt" id="p-prompt"></div>
+        <div class="context" id="p-context"></div>
+        <div class="feedback" id="p-feedback" aria-live="polite"></div>
+        <div class="actions">
+          <button class="btn" id="b-prev">Previous</button>
+          <button class="btn" id="b-show">Show answer</button>
+          <button class="btn primary" id="b-next">Next puzzle</button>
+          <span class="progress" id="p-progress"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="patterns-title">
+    <div class="section-head">
+      <h2 id="patterns-title">Where the points go</h2>
+      <p>Your mistakes and blunders, sorted by what actually happened on the board. Inaccuracies are left out; they rarely decide games at this level.</p>
+    </div>
+    <div class="patterns">
+      <div class="bars" id="kind-bars"></div>
+      <table class="phase-table" id="phase-table"></table>
+    </div>
+  </section>
+
+  <section aria-labelledby="games-title">
+    <div class="section-head">
+      <h2 id="games-title">Game by game</h2>
+      <p>The line under each game is your winning chances move by move (up is better for you). Open a game to see each flagged move and load it onto the board.</p>
+    </div>
+    <div class="ledger" id="ledger"></div>
+  </section>
+
+  <footer id="footer"></footer>
+</main>
+
+<script id="review-data" type="application/json">/*REVIEW_DATA*/</script>
+<script>
+(() => {
+  const R = JSON.parse(document.getElementById("review-data").textContent);
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  const KIND = {
+    hung_piece: "Left a piece hanging",
+    missed_capture: "Missed a capture",
+    allowed_mate: "Allowed checkmate",
+    missed_mate: "Missed checkmate",
+    bad_capture: "Losing capture",
+    other: "Lost ground (pawns, position)",
+  };
+  const CLS_MARK = { blunder: "??", mistake: "?", inaccuracy: "?!" };
+  const CLS_CLASS = { blunder: "b", mistake: "m", inaccuracy: "i" };
+
+  // ---------- header ----------
+  const games = R.games.slice().sort((a, b) => (b.date + (b.link || "")).localeCompare(a.date + (a.link || "")));
+  const dates = R.games.map((g) => g.date).sort();
+  const fmtDate = (d) => {
+    const [y, m, dd] = d.split(".").map(Number);
+    return new Date(y, m - 1, dd).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  };
+  const allFlags = R.games.flatMap((g) => g.flags.map((f) => ({ ...f, game: g })));
+  const serious = allFlags.filter((f) => f.cls !== "inaccuracy");
+  const kindCounts = {};
+  for (const f of serious) kindCounts[f.kind] = (kindCounts[f.kind] || 0) + 1;
+  const kindsSorted = Object.keys(KIND).filter((k) => kindCounts[k]).sort((a, b) => kindCounts[b] - kindCounts[a]);
+  // Lead with the biggest specific habit; "other" is a catch-all, not one habit.
+  const topKind = kindsSorted.find((k) => k !== "other") || kindsSorted[0];
+
+  $("eyebrow").textContent = `Chess.com · ${R.user} · ${R.games_analysed} games · ${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])}`;
+  const headlines = {
+    hung_piece: "Most of your mistakes leave a piece undefended.",
+    missed_capture: "You're leaving free material on the board.",
+    allowed_mate: "Watch your king: mates are costing you games.",
+    other: "Your games slip away a little at a time.",
+  };
+  $("headline").textContent = headlines[topKind] || "Here's what's costing you games.";
+  const pct = Math.round((100 * (kindCounts[topKind] || 0)) / Math.max(serious.length, 1));
+  $("lede").innerHTML = `<strong>${kindCounts[topKind]} of your ${serious.length} mistakes and blunders (${pct}%)</strong> came down to one thing: ${esc(KIND[topKind].toLowerCase())}.` + (topKind === "hung_piece"
+    ? " Before every move, check two things: which of your pieces it leaves unprotected, and what your opponent's last move attacks. That habit alone fixes the biggest share of these."
+    : " The puzzles below are built from exactly those moments.");
+  const perGame = (R.totals.blunder / Math.max(R.games_analysed, 1)).toFixed(1);
+  $("figures").innerHTML = [
+    [`${R.wins}–${R.draws}–${R.losses}`, "won · drawn · lost"],
+    [`${Math.round(R.avg_accuracy)}%`, "average accuracy"],
+    [perGame, "blunders per game"],
+    [`${R.kinds.missed_capture || 0}`, "free captures missed"],
+  ].map(([v, l]) => `<div class="figure"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
+
+  // ---------- board ----------
+  // Pieces: the cburnett set by Colin M. L. Burnett (GPLv2+), as used by Lichess.
+  const PIECE_SVG = {"wK": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgdmlld0JveD0iMCAwIDQ1IDQ1Ij48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2Utd2lkdGg9IjEuNSI+PHBhdGggc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIgZD0iTTIyLjUgMTEuNjNWNk0yMCA4aDUiLz48cGF0aCBmaWxsPSIjZmZmIiBzdHJva2UtbGluZWNhcD0iYnV0dCIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIgZD0iTTIyLjUgMjVzNC41LTcuNSAzLTEwLjVjMCAwLTEtMi41LTMtMi41cy0zIDIuNS0zIDIuNWMtMS41IDMgMyAxMC41IDMgMTAuNSIvPjxwYXRoIGZpbGw9IiNmZmYiIGQ9Ik0xMS41IDM3YzUuNSAzLjUgMTUuNSAzLjUgMjEgMHYtN3M5LTQuNSA2LTEwLjVjLTQtNi41LTEzLjUtMy41LTE2IDRWMjd2LTMuNWMtMy41LTcuNS0xMy0xMC41LTE2LTQtMyA2IDUgMTAgNSAxMHoiLz48cGF0aCBkPSJNMTEuNSAzMGM1LjUtMyAxNS41LTMgMjEgMG0tMjEgMy41YzUuNS0zIDE1LjUtMyAyMSAwbS0yMSAzLjVjNS41LTMgMTUuNS0zIDIxIDAiLz48L2c+PC9zdmc+", "wQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxnIGZpbGw9IiNmZmYiIGZpbGwtcnVsZT0iZXZlbm9kZCIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48cGF0aCBkPSJNOCAxMmEyIDIgMCAxIDEtNCAwIDIgMiAwIDEgMSA0IDBtMTYuNS00LjVhMiAyIDAgMSAxLTQgMCAyIDIgMCAxIDEgNCAwTTQxIDEyYTIgMiAwIDEgMS00IDAgMiAyIDAgMSAxIDQgME0xNiA4LjVhMiAyIDAgMSAxLTQgMCAyIDIgMCAxIDEgNCAwTTMzIDlhMiAyIDAgMSAxLTQgMCAyIDIgMCAxIDEgNCAwIi8+PHBhdGggc3Ryb2tlLWxpbmVjYXA9ImJ1dHQiIGQ9Ik05IDI2YzguNS0xLjUgMjEtMS41IDI3IDBsMi0xMi03IDExVjExbC01LjUgMTMuNS0zLTE1LTMgMTUtNS41LTE0VjI1TDcgMTR6Ii8+PHBhdGggc3Ryb2tlLWxpbmVjYXA9ImJ1dHQiIGQ9Ik05IDI2YzAgMiAxLjUgMiAyLjUgNCAxIDEuNSAxIDEgLjUgMy41LTEuNSAxLTEuNSAyLjUtMS41IDIuNS0xLjUgMS41LjUgMi41LjUgMi41IDYuNSAxIDE2LjUgMSAyMyAwIDAgMCAxLjUtMSAwLTIuNSAwIDAgLjUtMS41LTEtMi41LS41LTIuNS0uNS0yIC41LTMuNSAxLTIgMi41LTIgMi41LTQtOC41LTEuNS0xOC41LTEuNS0yNyAweiIvPjxwYXRoIGZpbGw9Im5vbmUiIGQ9Ik0xMS41IDMwYzMuNS0xIDE4LjUtMSAyMiAwTTEyIDMzLjVjNi0xIDE1LTEgMjEgMCIvPjwvZz48L3N2Zz4=", "wR": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxnIGZpbGw9IiNmZmYiIGZpbGwtcnVsZT0iZXZlbm9kZCIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48cGF0aCBzdHJva2UtbGluZWNhcD0iYnV0dCIgZD0iTTkgMzloMjd2LTNIOXptMy0zdi00aDIxdjR6bS0xLTIyVjloNHYyaDVWOWg1djJoNVY5aDR2NSIvPjxwYXRoIGQ9Im0zNCAxNC0zIDNIMTRsLTMtMyIvPjxwYXRoIHN0cm9rZS1saW5lY2FwPSJidXR0IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIiBkPSJNMzEgMTd2MTIuNUgxNFYxNyIvPjxwYXRoIGQ9Im0zMSAyOS41IDEuNSAyLjVoLTIwbDEuNS0yLjUiLz48cGF0aCBmaWxsPSJub25lIiBzdHJva2UtbGluZWpvaW49Im1pdGVyIiBkPSJNMTEgMTRoMjMiLz48L2c+PC9zdmc+", "wB": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxnIGZpbGw9Im5vbmUiIGZpbGwtcnVsZT0iZXZlbm9kZCIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48ZyBmaWxsPSIjZmZmIiBzdHJva2UtbGluZWNhcD0iYnV0dCI+PHBhdGggZD0iTTkgMzZjMy4zOS0uOTcgMTAuMTEuNDMgMTMuNS0yIDMuMzkgMi40MyAxMC4xMSAxLjAzIDEzLjUgMiAwIDAgMS42NS41NCAzIDItLjY4Ljk3LTEuNjUuOTktMyAuNS0zLjM5LS45Ny0xMC4xMS40Ni0xMy41LTEtMy4zOSAxLjQ2LTEwLjExLjAzLTEzLjUgMS0xLjM1LjQ5LTIuMzIuNDctMy0uNSAxLjM1LTEuOTQgMy0yIDMtMnoiLz48cGF0aCBkPSJNMTUgMzJjMi41IDIuNSAxMi41IDIuNSAxNSAwIC41LTEuNSAwLTIgMC0yIDAtMi41LTIuNS00LTIuNS00IDUuNS0xLjUgNi0xMS41LTUtMTUuNS0xMSA0LTEwLjUgMTQtNSAxNS41IDAgMC0yLjUgMS41LTIuNSA0IDAgMC0uNS41IDAgMnoiLz48cGF0aCBkPSJNMjUgOGEyLjUgMi41IDAgMSAxLTUgMCAyLjUgMi41IDAgMSAxIDUgMHoiLz48L2c+PHBhdGggc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIgZD0iTTE3LjUgMjZoMTBNMTUgMzBoMTVtLTcuNS0xNC41djVNMjAgMThoNSIvPjwvZz48L3N2Zz4=", "wN": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxnIGZpbGw9Im5vbmUiIGZpbGwtcnVsZT0iZXZlbm9kZCIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48cGF0aCBmaWxsPSIjZmZmIiBkPSJNMjIgMTBjMTAuNSAxIDE2LjUgOCAxNiAyOUgxNWMwLTkgMTAtNi41IDgtMjEiLz48cGF0aCBmaWxsPSIjZmZmIiBkPSJNMjQgMThjLjM4IDIuOTEtNS41NSA3LjM3LTggOS0zIDItMi44MiA0LjM0LTUgNC0xLjA0Mi0uOTQgMS40MS0zLjA0IDAtMy0xIDAgLjE5IDEuMjMtMSAyLTEgMC00LjAwMyAxLTQtNCAwLTIgNi0xMiA2LTEyczEuODktMS45IDItMy41Yy0uNzMtLjk5NC0uNS0yLS41LTMgMS0xIDMgMi41IDMgMi41aDJzLjc4LTEuOTkyIDIuNS0zYzEgMCAxIDMgMSAzIi8+PHBhdGggZmlsbD0iIzAwMCIgZD0iTTkuNSAyNS41YS41LjUgMCAxIDEtMSAwIC41LjUgMCAxIDEgMSAwbTUuNDMzLTkuNzVhLjUgMS41IDMwIDEgMS0uODY2LS41LjUgMS41IDMwIDEgMSAuODY2LjUiLz48L2c+PC9zdmc+", "wP": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxwYXRoIGZpbGw9IiNmZmYiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjEuNSIgZD0iTTIyLjUgOWMtMi4yMSAwLTQgMS43OS00IDQgMCAuODkuMjkgMS43MS43OCAyLjM4QzE3LjMzIDE2LjUgMTYgMTguNTkgMTYgMjFjMCAyLjAzLjk0IDMuODQgMi40MSA1LjAzLTMgMS4wNi03LjQxIDUuNTUtNy40MSAxMy40N2gyM2MwLTcuOTItNC40MS0xMi40MS03LjQxLTEzLjQ3IDEuNDctMS4xOSAyLjQxLTMgMi40MS01LjAzIDAtMi40MS0xLjMzLTQuNS0zLjI4LTUuNjIuNDktLjY3Ljc4LTEuNDkuNzgtMi4zOCAwLTIuMjEtMS43OS00LTQtNHoiLz48L3N2Zz4=", "bK": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgdmlld0JveD0iMCAwIDQ1IDQ1Ij48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBzdHJva2Utd2lkdGg9IjEuNSI+PHBhdGggc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIgZD0iTTIyLjUgMTEuNlY2Ii8+PHBhdGggZmlsbD0iIzAwMCIgc3Ryb2tlLWxpbmVjYXA9ImJ1dHQiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiIGQ9Ik0yMi41IDI1czQuNS03LjUgMy0xMC41YzAgMC0xLTIuNS0zLTIuNXMtMyAyLjUtMyAyLjVjLTEuNSAzIDMgMTAuNSAzIDEwLjUiLz48cGF0aCBmaWxsPSIjMDAwIiBkPSJNMTEuNSAzN2EyMi4zIDIyLjMgMCAwIDAgMjEgMHYtN3M5LTQuNSA2LTEwLjVjLTQtNi41LTEzLjUtMy41LTE2IDRWMjd2LTMuNWMtMy41LTcuNS0xMy0xMC41LTE2LTQtMyA2IDUgMTAgNSAxMHoiLz48cGF0aCBzdHJva2UtbGluZWpvaW49Im1pdGVyIiBkPSJNMjAgOGg1Ii8+PHBhdGggc3Ryb2tlPSIjZWNlY2VjIiBkPSJNMzIgMjkuNXM4LjUtNCA2LTkuN0MzNC4xIDE0IDI1IDE4IDIyLjUgMjQuNnYyLjEtMi4xQzIwIDE4IDkuOSAxNCA3IDE5LjljLTIuNSA1LjYgNC44IDkgNC44IDkiLz48cGF0aCBzdHJva2U9IiNlY2VjZWMiIGQ9Ik0xMS41IDMwYzUuNS0zIDE1LjUtMyAyMSAwbS0yMSAzLjVjNS41LTMgMTUuNS0zIDIxIDBtLTIxIDMuNWM1LjUtMyAxNS41LTMgMjEgMCIvPjwvZz48L3N2Zz4=", "bQ": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxnIGZpbGwtcnVsZT0iZXZlbm9kZCIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48ZyBzdHJva2U9Im5vbmUiPjxjaXJjbGUgY3g9IjYiIGN5PSIxMiIgcj0iMi43NSIvPjxjaXJjbGUgY3g9IjE0IiBjeT0iOSIgcj0iMi43NSIvPjxjaXJjbGUgY3g9IjIyLjUiIGN5PSI4IiByPSIyLjc1Ii8+PGNpcmNsZSBjeD0iMzEiIGN5PSI5IiByPSIyLjc1Ii8+PGNpcmNsZSBjeD0iMzkiIGN5PSIxMiIgcj0iMi43NSIvPjwvZz48cGF0aCBzdHJva2UtbGluZWNhcD0iYnV0dCIgZD0iTTkgMjZjOC41LTEuNSAyMS0xLjUgMjcgMGwyLjUtMTIuNUwzMSAyNWwtLjMtMTQuMS01LjIgMTMuNi0zLTE0LjUtMyAxNC41LTUuMi0xMy42TDE0IDI1IDYuNSAxMy41eiIvPjxwYXRoIHN0cm9rZS1saW5lY2FwPSJidXR0IiBkPSJNOSAyNmMwIDIgMS41IDIgMi41IDQgMSAxLjUgMSAxIC41IDMuNS0xLjUgMS0xLjUgMi41LTEuNSAyLjUtMS41IDEuNS41IDIuNS41IDIuNSA2LjUgMSAxNi41IDEgMjMgMCAwIDAgMS41LTEgMC0yLjUgMCAwIC41LTEuNS0xLTIuNS0uNS0yLjUtLjUtMiAuNS0zLjUgMS0yIDIuNS0yIDIuNS00LTguNS0xLjUtMTguNS0xLjUtMjcgMHoiLz48cGF0aCBmaWxsPSJub25lIiBzdHJva2UtbGluZWNhcD0iYnV0dCIgZD0iTTExIDM4LjVhMzUgMzUgMSAwIDAgMjMgMCIvPjxwYXRoIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2VjZWNlYyIgZD0iTTExIDI5YTM1IDM1IDEgMCAxIDIzIDBtLTIxLjUgMi41aDIwbS0yMSAzYTM1IDM1IDEgMCAwIDIyIDBtLTIzIDNhMzUgMzUgMSAwIDAgMjQgMCIvPjwvZz48L3N2Zz4=", "bR": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxnIGZpbGwtcnVsZT0iZXZlbm9kZCIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48cGF0aCBzdHJva2UtbGluZWNhcD0iYnV0dCIgZD0iTTkgMzloMjd2LTNIOXptMy41LTcgMS41LTIuNWgxN2wxLjUgMi41em0tLjUgNHYtNGgyMXY0eiIvPjxwYXRoIHN0cm9rZS1saW5lY2FwPSJidXR0IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIiBkPSJNMTQgMjkuNXYtMTNoMTd2MTN6Ii8+PHBhdGggc3Ryb2tlLWxpbmVjYXA9ImJ1dHQiIGQ9Ik0xNCAxNi41IDExIDE0aDIzbC0zIDIuNXpNMTEgMTRWOWg0djJoNVY5aDV2Mmg1VjloNHY1eiIvPjxwYXRoIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2VjZWNlYyIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIgc3Ryb2tlLXdpZHRoPSIxIiBkPSJNMTIgMzUuNWgyMW0tMjAtNGgxOW0tMTgtMmgxN20tMTctMTNoMTdNMTEgMTRoMjMiLz48L2c+PC9zdmc+", "bB": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxnIGZpbGw9Im5vbmUiIGZpbGwtcnVsZT0iZXZlbm9kZCIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48ZyBmaWxsPSIjMDAwIiBzdHJva2UtbGluZWNhcD0iYnV0dCI+PHBhdGggZD0iTTkgMzZjMy40LTEgMTAuMS40IDEzLjUtMiAzLjQgMi40IDEwLjEgMSAxMy41IDIgMCAwIDEuNi41IDMgMi0uNyAxLTEuNiAxLTMgLjUtMy40LTEtMTAuMS41LTEzLjUtMS0zLjQgMS41LTEwLjEgMC0xMy41IDEtMS40LjUtMi4zLjUtMy0uNSAxLjQtMiAzLTIgMy0yeiIvPjxwYXRoIGQ9Ik0xNSAzMmMyLjUgMi41IDEyLjUgMi41IDE1IDAgLjUtMS41IDAtMiAwLTIgMC0yLjUtMi41LTQtMi41LTQgNS41LTEuNSA2LTExLjUtNS0xNS41LTExIDQtMTAuNSAxNC01IDE1LjUgMCAwLTIuNSAxLjUtMi41IDQgMCAwLS41LjUgMCAyeiIvPjxwYXRoIGQ9Ik0yNSA4YTIuNSAyLjUgMCAxIDEtNSAwIDIuNSAyLjUgMCAxIDEgNSAweiIvPjwvZz48cGF0aCBzdHJva2U9IiNlY2VjZWMiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiIGQ9Ik0xNy41IDI2aDEwTTE1IDMwaDE1bS03LjUtMTQuNXY1TTIwIDE4aDUiLz48L2c+PC9zdmc+", "bN": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxnIGZpbGw9Im5vbmUiIGZpbGwtcnVsZT0iZXZlbm9kZCIgc3Ryb2tlPSIjMDAwIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIHN0cm9rZS13aWR0aD0iMS41Ij48cGF0aCBmaWxsPSIjMDAwIiBkPSJNMjIgMTBjMTAuNSAxIDE2LjUgOCAxNiAyOUgxNWMwLTkgMTAtNi41IDgtMjEiLz48cGF0aCBmaWxsPSIjMDAwIiBkPSJNMjQgMThjLjM4IDIuOTEtNS41NSA3LjM3LTggOS0zIDItMi44MiA0LjM0LTUgNC0xLjA0LS45NCAxLjQxLTMuMDQgMC0zLTEgMCAuMTkgMS4yMy0xIDItMSAwLTQgMS00LTQgMC0yIDYtMTIgNi0xMnMxLjg5LTEuOSAyLTMuNWMtLjczLTEtLjUtMi0uNS0zIDEtMSAzIDIuNSAzIDIuNWgycy43OC0yIDIuNS0zYzEgMCAxIDMgMSAzIi8+PHBhdGggZmlsbD0iI2VjZWNlYyIgc3Ryb2tlPSIjZWNlY2VjIiBkPSJNOS41IDI1LjVhLjUuNSAwIDEgMS0xIDAgLjUuNSAwIDEgMSAxIDBtNS40My05Ljc1YS41IDEuNSAzMCAxIDEtLjg2LS41LjUgMS41IDMwIDEgMSAuODYuNSIvPjxwYXRoIGZpbGw9IiNlY2VjZWMiIHN0cm9rZT0ibm9uZSIgZD0ibTI0LjU1IDEwLjQtLjQ1IDEuNDUuNS4xNWMzLjE1IDEgNS42NSAyLjQ5IDcuOSA2Ljc1UzM1Ljc1IDI5LjA2IDM1LjI1IDM5bC0uMDUuNWgyLjI1bC4wNS0uNWMuNS0xMC4wNi0uODgtMTYuODUtMy4yNS0yMS4zNHMtNS43OS02LjY0LTkuMTktNy4xNnoiLz48L2c+PC9zdmc+", "bP": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHN0eWxlPSJjb2xvci1zY2hlbWU6bGlnaHQgb25seSIgd2lkdGg9IjQ1IiBoZWlnaHQ9IjQ1IiB2aWV3Qm94PSIwIDAgNDUgNDUiPjxwYXRoIHN0cm9rZT0iIzAwMCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2Utd2lkdGg9IjEuNSIgZD0iTTIyLjUgOWE0IDQgMCAwIDAtMy4yMiA2LjM4IDYuNDggNi40OCAwIDAgMC0uODcgMTAuNjVjLTMgMS4wNi03LjQxIDUuNTUtNy40MSAxMy40N2gyM2MwLTcuOTItNC40MS0xMi40MS03LjQxLTEzLjQ3YTYuNDYgNi40NiAwIDAgMC0uODctMTAuNjVBNC4wMSA0LjAxIDAgMCAwIDIyLjUgOXoiLz48L3N2Zz4="};
+  const PIECE_IMG = {};
+  const piecesReady = Promise.all(Object.entries(PIECE_SVG).map(([key, src]) => new Promise((done) => {
+    const img = new Image();
+    img.onload = img.onerror = () => done();
+    img.src = src;
+    PIECE_IMG[key] = img;
+  })));
+  const sqName = (f, r) => "abcdefgh"[f] + (r + 1);
+  const parseSq = (s) => [s.charCodeAt(0) - 97, s.charCodeAt(1) - 49];
+  const pieceKey = (pc) => (pc.white ? "w" : "b") + pc.type.toUpperCase();
+
+  function parseFen(fen) {
+    const [place, side] = fen.split(" ");
+    const board = Array.from({ length: 8 }, () => Array(8).fill(null));
+    place.split("/").forEach((row, i) => {
+      let f = 0;
+      for (const ch of row) {
+        if (/\d/.test(ch)) f += +ch;
+        else { board[7 - i][f] = { white: ch === ch.toUpperCase(), type: ch.toLowerCase() }; f++; }
+      }
+    });
+    return { board, side: side === "b" ? "black" : "white" };
+  }
+
+  // Apply a UCI move to a board array (display only: handles captures,
+  // castling, en passant and promotion, nothing else).
+  function applyMove(board, uci) {
+    const [f1, r1] = parseSq(uci.slice(0, 2)), [f2, r2] = parseSq(uci.slice(2, 4));
+    const pc = board[r1][f1];
+    if (!pc) return false;
+    if (pc.type === "p" && f1 !== f2 && !board[r2][f2]) board[r1][f2] = null;
+    if (pc.type === "k" && Math.abs(f2 - f1) === 2) {
+      const rf = f2 > f1 ? 7 : 0, nf = f2 > f1 ? 5 : 3;
+      board[r1][nf] = board[r1][rf];
+      board[r1][rf] = null;
+    }
+    board[r1][f1] = null;
+    board[r2][f2] = pc.type === "p" && (r2 === 0 || r2 === 7) ? { white: pc.white, type: uci[4] || "q" } : pc;
+    return true;
+  }
+
+  const canvas = $("board");
+  const ctx = canvas.getContext("2d");
+  let SQ = 64; // device pixels per square
+  let view = null; // { fen, board, side, flip, marks, highlight, selected }
+  let drag = null; // { from, pc, x, y, moved }
+  let anim = null; // { to, from, t0 }
+  const ANIM_MS = 220;
+  const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Render at the screen's real pixel density so pieces and arrows stay crisp.
+  function resize() {
+    const cssWidth = canvas.parentElement.getBoundingClientRect().width;
+    const px = Math.max(8, Math.round((cssWidth * (window.devicePixelRatio || 1)) / 8) * 8);
+    if (canvas.width !== px) { canvas.width = px; canvas.height = px; }
+    SQ = px / 8;
+    draw();
+  }
+  new ResizeObserver(resize).observe(canvas.parentElement);
+  matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`).addEventListener?.("change", resize);
+
+  const topLeft = (f, r) => (view.flip ? [(7 - f) * SQ, r * SQ] : [f * SQ, (7 - r) * SQ]);
+  const center = (sq) => { const [f, r] = parseSq(sq); const [x, y] = topLeft(f, r); return [x + SQ / 2, y + SQ / 2]; };
+
+  function squareAt(evt) {
+    const rect = canvas.getBoundingClientRect();
+    const fx = Math.floor(((evt.clientX - rect.left) / rect.width) * 8);
+    const fy = Math.floor(((evt.clientY - rect.top) / rect.height) * 8);
+    if (fx < 0 || fx > 7 || fy < 0 || fy > 7) return null;
+    return view.flip ? sqName(7 - fx, fy) : sqName(fx, 7 - fy);
+  }
+
+  function draw(now) {
+    if (!view) return;
+    const light = css("--sq-light"), dark = css("--sq-dark");
+    for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) {
+      const [x, y] = topLeft(f, r);
+      ctx.fillStyle = (f + r) % 2 ? light : dark;
+      ctx.fillRect(x, y, SQ, SQ);
+    }
+    for (const h of view.highlight) {
+      const [f, r] = parseSq(h.sq);
+      const [x, y] = topLeft(f, r);
+      ctx.globalAlpha = 0.42;
+      ctx.fillStyle = h.color;
+      ctx.fillRect(x, y, SQ, SQ);
+      ctx.globalAlpha = 1;
+    }
+    if (view.selected) {
+      const [f, r] = parseSq(view.selected);
+      const [x, y] = topLeft(f, r);
+      const w = Math.max(2, SQ * 0.06);
+      ctx.strokeStyle = css("--accent");
+      ctx.lineWidth = w;
+      ctx.strokeRect(x + w / 2, y + w / 2, SQ - w, SQ - w);
+    }
+    // Coordinates in the corners of the edge squares.
+    ctx.font = `600 ${Math.round(SQ * 0.17)}px ${css("--mono")}`;
+    ctx.textBaseline = "alphabetic";
+    for (let i = 0; i < 8; i++) {
+      const f = view.flip ? 7 - i : i, r = view.flip ? i : 7 - i;
+      ctx.fillStyle = (i + 1) % 2 ? light : dark;
+      ctx.textAlign = "right";
+      ctx.fillText("abcdefgh"[f], (i + 1) * SQ - SQ * 0.06, 8 * SQ - SQ * 0.07);
+      ctx.fillStyle = i % 2 ? light : dark;
+      ctx.textAlign = "left";
+      ctx.fillText(String(r + 1), SQ * 0.06, i * SQ + SQ * 0.22);
+    }
+    // Pieces (the dragged or animating piece is drawn last, on top).
+    for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) {
+      const pc = view.board[r][f];
+      if (!pc) continue;
+      const sq = sqName(f, r);
+      if ((drag && drag.moved && sq === drag.from) || (anim && sq === anim.to)) continue;
+      const [x, y] = topLeft(f, r);
+      const img = PIECE_IMG[pieceKey(pc)];
+      if (img && img.complete) ctx.drawImage(img, x, y, SQ, SQ);
+    }
+    for (const m of view.marks) arrow(m.from, m.to, m.color);
+    if (anim) {
+      const t = Math.min(1, ((now ?? performance.now()) - anim.t0) / ANIM_MS);
+      const e = 1 - Math.pow(1 - t, 3);
+      const [x1, y1] = center(anim.from), [x2, y2] = center(anim.to);
+      const [f, r] = parseSq(anim.to);
+      const img = PIECE_IMG[pieceKey(view.board[r][f])];
+      ctx.drawImage(img, x1 + (x2 - x1) * e - SQ / 2, y1 + (y2 - y1) * e - SQ / 2, SQ, SQ);
+    }
+    if (drag && drag.moved) {
+      const s = SQ * 1.12;
+      ctx.drawImage(PIECE_IMG[pieceKey(drag.pc)], drag.x - s / 2, drag.y - s / 2, s, s);
+    }
+  }
+
+  function arrow(from, to, color) {
+    const [x1, y1] = center(from), [x2, y2] = center(to);
+    const ang = Math.atan2(y2 - y1, x2 - x1);
+    const width = SQ * 0.17, head = SQ * 0.44, half = SQ * 0.24;
+    const bx = x2 - Math.cos(ang) * head, by = y2 - Math.sin(ang) * head;
+    ctx.save();
+    ctx.globalAlpha = 0.82;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(bx + Math.sin(ang) * half, by - Math.cos(ang) * half);
+    ctx.lineTo(bx - Math.sin(ang) * half, by + Math.cos(ang) * half);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function setView(fen, flip, extra = {}) {
+    const { board, side } = parseFen(fen);
+    view = { fen, board, side, flip, marks: [], highlight: [], selected: null, ...extra };
+    drag = null;
+    anim = null;
+    draw();
+  }
+
+  // Play a move on the displayed board, gliding the piece unless asked not to.
+  function playMove(uci, glide) {
+    if (!applyMove(view.board, uci)) return;
+    if (!glide || reducedMotion()) { draw(); return; }
+    anim = { from: uci.slice(0, 2), to: uci.slice(2, 4), t0: performance.now() };
+    const tick = (now) => {
+      draw(now);
+      if (now - anim.t0 < ANIM_MS) requestAnimationFrame(tick);
+      else { anim = null; draw(); }
+    };
+    requestAnimationFrame(tick);
+  }
+
+  // ---------- puzzles ----------
+  const puzzles = allFlags
+    .filter((f) => f.cls !== "inaccuracy")
+    .map((f) => {
+      const userWhite = f.game.color === "white";
+      if (f.kind === "missed_capture" || f.kind === "missed_mate") {
+        return { f, type: "find", fen: f.fen, answer: f.best_uci, line: f.best_line, flip: !userWhite };
+      }
+      if (f.kind === "hung_piece" || f.kind === "allowed_mate") {
+        return { f, type: "threat", fen: f.fen_after, answer: f.reply_uci, line: f.refutation, flip: !userWhite };
+      }
+      return null;
+    })
+    .filter((p) => p && p.answer && p.answer !== "0000")
+    .sort((a, b) => b.f.drop - a.f.drop);
+  puzzles.forEach((p) => (p.id = `${p.f.game.link || p.f.game.date}#${p.f.ply}`));
+
+  let solved = new Set();
+  try { solved = new Set(JSON.parse(localStorage.getItem("solved") || "[]")); } catch (e) { /* storage unavailable */ }
+  const saveSolved = () => { try { localStorage.setItem("solved", JSON.stringify([...solved])); } catch (e) { /* ignore */ } };
+
+  let list = puzzles;
+  let idx = 0;
+  let state = null; // "solving" | "solved" | "shown" | "review"
+
+  const cap = (s) => s[0].toUpperCase() + s.slice(1);
+  const moveText = (line, startNo, whiteFirst) => {
+    let out = "", no = startNo, white = whiteFirst;
+    line.slice(0, 6).forEach((m, i) => {
+      if (white) out += `${no}. ${m} `;
+      else out += (i === 0 ? `${no}… ` : "") + m + " ";
+      if (!white) no++;
+      white = !white;
+    });
+    return out.trim();
+  };
+
+  function setFeedback(html, cls) {
+    const el = $("p-feedback");
+    el.className = "feedback" + (cls ? " " + cls : "");
+    el.innerHTML = html;
+  }
+
+  function loadPuzzle() {
+    const p = list[idx];
+    if (!p) {
+      $("p-prompt").textContent = "No puzzles of this type yet.";
+      ["p-kind", "p-context", "p-feedback"].forEach((id) => ($(id).textContent = ""));
+      view = null;
+      updateButtons();
+      return;
+    }
+    const f = p.f, g = f.game;
+    const toMove = parseFen(p.fen).side;
+    const opp = g.color === "white" ? g.black : g.white;
+    const youPlayed = `${f.move_no}${g.color === "white" ? "." : "…"} ${f.san}`;
+    $("p-kind").innerHTML = `<i style="background:var(--${f.cls})"></i>${p.type === "find" ? "Find the win" : "Spot the threat"} · ${esc(f.cls)}`;
+    $("p-prompt").textContent = p.type === "find"
+      ? `${cap(toMove)} to move. Find the best move.`
+      : `${cap(toMove)} to move. How does your opponent punish your last move?`;
+    $("p-context").innerHTML = `vs ${esc(opp)}, ${esc(fmtDate(g.date))}. ` +
+      (p.type === "find" ? `In the game you played <span class="num">${esc(youPlayed)}</span>.` : `You just played <span class="num">${esc(youPlayed)}</span>.`) +
+      (g.link ? ` <a href="${esc(g.link)}" target="_blank" rel="noopener">Open game</a>` : "");
+    setFeedback("Drag a piece, or click it and then its destination.", "");
+    const highlight = p.type === "threat"
+      ? [f.played_uci.slice(0, 2), f.played_uci.slice(2, 4)].map((sq) => ({ sq, color: css("--blunder") }))
+      : [];
+    setView(p.fen, p.flip, { highlight });
+    state = "solving";
+    updateButtons();
+  }
+
+  function explainAnswer(p, success) {
+    const f = p.f;
+    const line = moveText(p.line, +p.fen.split(" ")[5], parseFen(p.fen).side === "white");
+    const what = p.type === "find"
+      ? `${success ? "Yes:" : "The move was"} <b class="num">${esc(p.line[0])}</b>. In the game you ${esc(f.explain)}.`
+      : `${success ? "Exactly:" : "The punishment was"} <b class="num">${esc(p.line[0])}</b>. Your move ${esc(f.explain)}.`;
+    return `${what}<span class="line">${esc(line)}</span>`;
+  }
+
+  // Found it: play the move on the board and mark both squares.
+  function solve(viaDrag) {
+    const p = list[idx];
+    view.selected = null;
+    view.highlight = [p.answer.slice(0, 2), p.answer.slice(2, 4)].map((sq) => ({ sq, color: css("--good") }));
+    playMove(p.answer, !viaDrag);
+    setFeedback(explainAnswer(p, true), "ok");
+    state = "solved";
+    solved.add(p.id);
+    saveSolved();
+    updateButtons();
+  }
+
+  // Gave up: keep the position and draw the answer (and, for missed wins,
+  // the move actually played) as arrows.
+  function showAnswer() {
+    const p = list[idx], f = p.f;
+    view.selected = null;
+    view.marks = [{ from: p.answer.slice(0, 2), to: p.answer.slice(2, 4), color: css("--good") }];
+    if (p.type === "find") view.marks.push({ from: f.played_uci.slice(0, 2), to: f.played_uci.slice(2, 4), color: css("--blunder") });
+    setFeedback(explainAnswer(p, false) + (p.type === "find" ? `<span class="line">Green: the better move. Red: what you played.</span>` : ""), "");
+    state = "shown";
+    draw();
+    updateButtons();
+  }
+
+  function updateButtons() {
+    $("b-prev").disabled = idx <= 0;
+    $("b-next").disabled = idx >= list.length - 1;
+    $("b-show").disabled = state !== "solving";
+    const done = puzzles.filter((p) => solved.has(p.id)).length;
+    $("p-progress").textContent = list.length ? `${idx + 1} / ${list.length} · ${done} solved` : "";
+  }
+
+  function attempt(from, to, viaDrag) {
+    const p = list[idx];
+    if (from + to === p.answer.slice(0, 4)) { solve(viaDrag); return; }
+    view.selected = null;
+    setFeedback("Not that one. Look for captures and checks first, or press Show answer.", "no");
+    const fb = $("p-feedback");
+    fb.classList.remove("shake");
+    void fb.offsetWidth;
+    fb.classList.add("shake");
+    draw();
+  }
+
+  const isOwn = (sq) => {
+    if (!view || !sq) return false;
+    const [f, r] = parseSq(sq);
+    const pc = view.board[r][f];
+    return !!pc && pc.white === (view.side === "white");
+  };
+  const devicePoint = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    return [((e.clientX - rect.left) / rect.width) * canvas.width, ((e.clientY - rect.top) / rect.height) * canvas.height];
+  };
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (!view || state !== "solving") return;
+    const sq = squareAt(e);
+    if (!sq) return;
+    if (isOwn(sq)) {
+      const [f, r] = parseSq(sq);
+      const [x, y] = devicePoint(e);
+      view.selected = sq;
+      drag = { from: sq, pc: view.board[r][f], x, y, sx: e.clientX, sy: e.clientY, moved: false };
+      canvas.setPointerCapture(e.pointerId);
+      draw();
+    } else if (view.selected) {
+      attempt(view.selected, sq, false);
+    }
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (drag) {
+      [drag.x, drag.y] = devicePoint(e);
+      if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 4) drag.moved = true;
+      canvas.style.cursor = "grabbing";
+      draw();
+    } else if (view) {
+      canvas.style.cursor = state === "solving" && isOwn(squareAt(e)) ? "grab" : "default";
+    }
+  });
+  const endDrag = (e) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    canvas.style.cursor = "default";
+    const to = squareAt(e);
+    if (d.moved && to && to !== d.from) attempt(d.from, to, true);
+    else draw();
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", () => { drag = null; draw(); });
+
+  $("b-show").addEventListener("click", showAnswer);
+  $("b-next").addEventListener("click", () => { if (idx < list.length - 1) { idx++; loadPuzzle(); } });
+  $("b-prev").addEventListener("click", () => { if (idx > 0) { idx--; loadPuzzle(); } });
+  document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
+    const filter = chip.dataset.filter;
+    document.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c === chip)));
+    list = filter === "all" ? puzzles : puzzles.filter((p) => p.type === filter);
+    idx = 0;
+    loadPuzzle();
+  }));
+
+  // Show any flagged move on the board (from the game ledger).
+  function showFlag(f) {
+    const g = f.game;
+    const opp = g.color === "white" ? g.black : g.white;
+    setView(f.fen, g.color !== "white", {
+      marks: [
+        { from: f.best_uci.slice(0, 2), to: f.best_uci.slice(2, 4), color: css("--good") },
+        { from: f.played_uci.slice(0, 2), to: f.played_uci.slice(2, 4), color: css("--blunder") },
+      ],
+    });
+    state = "review";
+    $("p-kind").innerHTML = `<i style="background:var(--${f.cls === "inaccuracy" ? "inacc" : f.cls})"></i>From the game · ${esc(f.cls)}`;
+    $("p-prompt").textContent = `${f.move_no}${g.color === "white" ? "." : "…"} ${f.san}${CLS_MARK[f.cls]}`;
+    $("p-context").innerHTML = `vs ${esc(opp)}, ${esc(fmtDate(g.date))}. Red: what you played. Green: the better move.` + (g.link ? ` <a href="${esc(g.link)}" target="_blank" rel="noopener">Open game</a>` : "");
+    const line = moveText(f.best_line, +f.fen.split(" ")[5], parseFen(f.fen).side === "white");
+    setFeedback(`You ${esc(f.explain)}. Better was <b class="num">${esc(f.best)}</b>.<span class="line">${esc(line)}</span>`, "");
+    updateButtons();
+    $("practice").scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "start" });
+  }
+
+  // ---------- patterns ----------
+  const maxKind = Math.max(...kindsSorted.map((k) => kindCounts[k]), 1);
+  $("kind-bars").innerHTML = kindsSorted.map((k) => `
+    <div class="bar-row${k === topKind ? " top" : ""}">
+      <span>${esc(KIND[k])}</span>
+      <div class="bar-track" role="img" aria-label="${esc(KIND[k])}: ${kindCounts[k]}"><div class="bar-fill" style="width:${(100 * kindCounts[k]) / maxKind}%"></div></div>
+      <span class="num">${kindCounts[k]}</span>
+    </div>`).join("");
+  const phases = ["opening", "middlegame", "endgame"];
+  const byPhase = Object.fromEntries(phases.map((p) => [p, { blunder: 0, mistake: 0 }]));
+  for (const f of serious) byPhase[f.phase][f.cls]++;
+  $("phase-table").innerHTML = `<thead><tr><th>Phase</th><th class="r">Blunders</th><th class="r">Mistakes</th></tr></thead><tbody>` +
+    phases.map((p) => `<tr><td>${cap(p)}</td><td class="num">${byPhase[p].blunder}</td><td class="num">${byPhase[p].mistake}</td></tr>`).join("") + "</tbody>";
+
+  // ---------- ledger ----------
+  function sparkline(g) {
+    const w = 160, h = 34, n = g.evals.length;
+    if (n < 2) return "";
+    const sign = g.color === "white" ? 1 : -1;
+    const wp = (cp) => 1 / (1 + Math.exp(-0.00368208 * cp));
+    const pts = g.evals.map((cp, i) => [(i / (n - 1)) * w, h - wp(sign * cp) * h]);
+    const path = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    const dots = g.flags.filter((f) => f.cls !== "inaccuracy").map((f) => {
+      const p = pts[Math.min(f.ply + 1, n - 1)];
+      return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6" fill="var(--${f.cls})"/>`;
+    }).join("");
+    return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0" y1="${h / 2}" x2="${w}" y2="${h / 2}" stroke="var(--line)" stroke-width="1"/>
+      <path d="${path} L ${w} ${h} L 0 ${h} Z" fill="var(--accent-soft)"/>
+      <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>${dots}</svg>`;
+  }
+
+  $("ledger").innerHTML = games.map((g, gi) => {
+    const opp = g.color === "white" ? g.black : g.white;
+    const oppElo = g.color === "white" ? g.black_elo : g.white_elo;
+    const c = g.counts;
+    const flags = g.flags.map((f, fi) => `
+      <div class="flag">
+        <span class="mv">${f.move_no}${g.color === "white" ? "." : "…"} ${esc(f.san)}<span class="${CLS_CLASS[f.cls]}">${CLS_MARK[f.cls]}</span></span>
+        <span class="why">You ${esc(f.explain)}. <small>Better: ${esc(f.best)}</small></span>
+        <button data-g="${gi}" data-f="${fi}">Show on board</button>
+      </div>`).join("");
+    return `<details class="game">
+      <summary>
+        <span class="num">${esc(fmtDate(g.date))}</span>
+        <span class="opp"><span class="side ${g.color === "white" ? "w" : "b"}" title="You played ${g.color}"></span>${esc(opp)} <small>${esc(oppElo)}</small></span>
+        <span class="result ${g.result}">${g.result}</span>
+        <span class="num hide-sm">${Math.round(g.accuracy)}%</span>
+        <span class="marks hide-sm"><span class="b">${c.blunder}??</span> <span class="m">${c.mistake}?</span> <span class="i">${c.inaccuracy}?!</span></span>
+        <span class="hide-sm">${sparkline(g)}</span>
+      </summary>
+      <div class="game-body">${flags || '<p class="empty">No mistakes flagged in this game.</p>'}
+        ${g.link ? `<a class="game-link" href="${esc(g.link)}" target="_blank" rel="noopener">Open on Chess.com</a>` : ""}
+      </div>
+    </details>`;
+  }).join("");
+  $("ledger").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-g]");
+    if (!b) return;
+    const g = games[+b.dataset.g];
+    showFlag({ ...g.flags[+b.dataset.f], game: g });
+  });
+
+  $("footer").innerHTML = `
+    <p>Analysed by zchess, about ${Math.round(R.nodes / 1000)}k positions searched per move. Accuracy and the inaccuracy / mistake / blunder marks follow Lichess's method: a move that loses 10, 20 or 30 points of winning chances.</p>
+    <p>Pieces: the cburnett set by Colin M. L. Burnett (GPLv2+), as used on Lichess.</p>
+    <p>An annotated copy of every game, with evaluations and better lines, is in <code>zchess/data/review/fingjoey-annotated.pgn</code>; open it in En Croissant to step through.</p>`;
+
+  // Redraw the board when the theme changes.
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => draw());
+  new MutationObserver(() => draw()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  piecesReady.then(loadPuzzle);
+})();
+</script>

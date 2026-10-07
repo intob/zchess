@@ -23,8 +23,10 @@ zig build -Dnet="$NET"
 cp zig-out/bin/zchess "$OUT/zchess"
 
 # 20k shuffled book positions as EPD (fixed seed, so runs are comparable).
+# (awk stops at 20k itself: `head` would close the pipe early, and under
+# pipefail the resulting SIGPIPE in sort would abort the script.)
 awk 'BEGIN { srand(42) } { print rand() "\t" $1 " " $2 " " $3 " " $4 }' data/book.fen |
-    sort -n | cut -f2 | head -n 20000 > "$OUT/openings.epd"
+    sort -n | awk -F'\t' 'NR <= 20000 { print $2 }' > "$OUT/openings.epd"
 
 echo "gauntlet: $NET vs Stockfish UCI_Elo [$LEVELS], $GAMES games each at $TC, concurrency $CONC -> $OUT"
 for elo in $LEVELS; do

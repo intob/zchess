@@ -5,10 +5,12 @@
 # uses the home LAN directly.
 #
 #   scripts/cluster.sh deploy <net>             build for Pi 5 and copy binary + net
-#   scripts/cluster.sh start <gen> <net> <nodes> [book]  deploy, then start datagen for that generation
+#   scripts/cluster.sh start <gen> <net> <nodes> [book]  deploy, then run datagen for that generation
+#                                               as a systemd service (survives reboots and crashes)
 #   scripts/cluster.sh status                   last progress line from every host
-#   scripts/cluster.sh stop                     stop datagen everywhere
+#   scripts/cluster.sh stop                     stop datagen everywhere and disable the service
 #   scripts/cluster.sh collect <gen>            stop, fetch and append each host's data to data/gen<gen>.bin
+#   scripts/cluster.sh count <gen>              total positions generated so far across hosts
 #
 # pipeline.sh calls `start` before its own datagen and `collect` before training.
 # Files in data/cluster/gen<gen>-*.staged are appended by `collect` too.
@@ -17,7 +19,8 @@ cd "$(dirname "$0")/.."
 
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 REMOTE=zchess
-PREFIX=zig-out-pi
+PREFIX_ARM=zig-out-pi   # Raspberry Pi 5 (Cortex-A76)
+PREFIX_X86=zig-out-x86  # x86-64 cloud VMs (AVX2 baseline)
 RECORD=32
 # Thermal guard: pause datagen at GUARD_HIGH C, resume at GUARD_LOW C.
 GUARD_HIGH=${GUARD_HIGH:-75}
@@ -30,7 +33,8 @@ hosts() {
 }
 
 build() {
-    zig build -Dtarget=aarch64-linux-musl -Dcpu=cortex_a76 -Dart=false -p "$PREFIX"
+    zig build -Dtarget=aarch64-linux-musl -Dcpu=cortex_a76 -Dart=false -p "$PREFIX_ARM"
+    zig build -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Dart=false -p "$PREFIX_X86"
 }
 
 # Copy binary, guard and net to the given hosts (default: all). Files are
@@ -46,11 +50,19 @@ deploy() {
             echo "cluster: $h unreachable, skipping"
             continue
         fi
-        scp -q "$PREFIX/bin/zchess" "$h:$REMOTE/zchess.new"
+        local arch prefix
+        arch=$($SSH "$h" uname -m)
+        case "$arch" in
+            aarch64) prefix=$PREFIX_ARM ;;
+            x86_64) prefix=$PREFIX_X86 ;;
+            *) echo "cluster: $h has unsupported arch $arch, skipping"; continue ;;
+        esac
+        scp -q "$prefix/bin/zchess" "$h:$REMOTE/zchess.new"
         scp -q scripts/pi-thermal-guard.sh "$h:$REMOTE/pi-thermal-guard.sh.new"
+        scp -q scripts/run-datagen.sh "$h:$REMOTE/run-datagen.sh.new"
         [ "$net" != hce ] && scp -q "$net" "$h:$REMOTE/"
-        $SSH "$h" "cd $REMOTE && mv zchess.new zchess && mv pi-thermal-guard.sh.new pi-thermal-guard.sh && chmod +x zchess pi-thermal-guard.sh"
-        echo "cluster: deployed to $h"
+        $SSH "$h" "cd $REMOTE && mv zchess.new zchess && mv pi-thermal-guard.sh.new pi-thermal-guard.sh && mv run-datagen.sh.new run-datagen.sh && chmod +x zchess pi-thermal-guard.sh run-datagen.sh"
+        echo "cluster: deployed to $h ($arch)"
     done
 }
 
@@ -76,19 +88,34 @@ start() {
         for h in $idle; do scp -q "$book" "$h:$REMOTE/" 2>/dev/null || true; done
         book_opt="--book $(basename "$book")"
     fi
-    local i=0
     for h in $idle; do
-        i=$((i + 1))
-        local seed=$(( (gen * 1000 + i) * 2654435761 + RANDOM ))
-        # `cd` must be its own statement: `cd && cmd &` backgrounds a subshell
-        # that holds ssh's stdout open and ssh never returns.
-        if $SSH -n "$h" "cd $REMOTE || exit 1; setsid nohup ./zchess datagen --out data/gen$gen.bin --positions 1000000000 \
-            --nodes $nodes --threads \$(nproc) --net $remote_net --seed $seed $book_opt \
-            > datagen-gen$gen.log 2>&1 < /dev/null & \
-            sleep 1; setsid nohup ./pi-thermal-guard.sh $GUARD_HIGH $GUARD_LOW >> guard.log 2>&1 < /dev/null &" < /dev/null 2>/dev/null; then
-            echo "cluster: $h generating gen$gen ($remote_net, $nodes nodes, seed $seed, thermal guard ${GUARD_HIGH}C/${GUARD_LOW}C)"
+        # Settings for run-datagen.sh; the service re-reads them on every (re)start.
+        printf 'GEN=%s\nNET=%s\nNODES=%s\nBOOK_OPT="%s"\nGUARD_HIGH=%s\nGUARD_LOW=%s\n' \
+            "$gen" "$remote_net" "$nodes" "$book_opt" "$GUARD_HIGH" "$GUARD_LOW" |
+            $SSH "$h" "cat > $REMOTE/datagen.env"
+        # systemd unit: restarts datagen after reboots, power cuts and crashes.
+        local user dir
+        user=$($SSH "$h" whoami)
+        dir=$($SSH "$h" 'echo $HOME')/$REMOTE
+        if printf '%s\n' \
+            '[Unit]' \
+            'Description=zchess self-play data generation' \
+            'After=network-online.target' \
+            'Wants=network-online.target' \
+            '' \
+            '[Service]' \
+            "User=$user" \
+            "ExecStart=$dir/run-datagen.sh" \
+            'Nice=19' \
+            'Restart=always' \
+            'RestartSec=30' \
+            '' \
+            '[Install]' \
+            'WantedBy=multi-user.target' |
+            $SSH "$h" "sudo -n tee /etc/systemd/system/zchess-datagen.service >/dev/null && sudo -n systemctl daemon-reload && sudo -n systemctl enable --now zchess-datagen >/dev/null 2>&1"; then
+            echo "cluster: $h generating gen$gen as a service ($remote_net, $nodes nodes, thermal guard ${GUARD_HIGH}C/${GUARD_LOW}C)"
         else
-            echo "cluster: $h unreachable, skipping"
+            echo "cluster: $h: could not install the service (needs passwordless sudo)"
         fi
     done
 }
@@ -99,7 +126,9 @@ status() {
         line=$($SSH "$h" "cd $REMOTE 2>/dev/null || exit 0; \
             if pgrep -f '^[.]/zchess datagen' >/dev/null; then echo -n 'running: '; else echo -n 'idle: '; fi; \
             ls -t datagen-gen*.log 2>/dev/null | head -n 1 | xargs -r tail -c 200 | tr '\r' '\n' | grep -a . | tail -n 1; \
-            echo \" | \$(vcgencmd measure_temp 2>/dev/null) | guard: \$(tail -n 1 guard.log 2>/dev/null)\"" 2>/dev/null || echo "unreachable")
+            if command -v vcgencmd >/dev/null; then hw=\$(vcgencmd measure_temp); \
+            else hw=\"cpu steal \$(vmstat 1 2 | awk 'NR==2{for(i=1;i<=NF;i++) if(\$i==\"st\") c=i} END{print \$c}')%\"; fi; \
+            echo \" | \$hw | guard: \$(tail -n 1 guard.log 2>/dev/null)\"" 2>/dev/null || echo "unreachable")
         echo "$h: $line"
     done
 }
@@ -107,7 +136,7 @@ status() {
 stop() {
     for h in $(hosts); do
         # Bracketed patterns so pkill never matches the remote shell running this.
-        $SSH "$h" "pkill -f 'pi-[t]hermal-guard'; for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f 'pi-[t]hermal-guard' >/dev/null || break; sleep 1; done; \
+        $SSH "$h" "sudo -n systemctl disable --now zchess-datagen >/dev/null 2>&1; pkill -f 'pi-[t]hermal-guard'; for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f 'pi-[t]hermal-guard' >/dev/null || break; sleep 1; done; \
             pkill -CONT -f '^[.]/zchess datagen'; pkill -f '^[.]/zchess datagen'; \
             for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f '^[.]/zchess datagen' >/dev/null || exit 0; sleep 1; done" 2>/dev/null || true
     done
@@ -155,6 +184,16 @@ collect() {
     done
 }
 
+# Total positions generated for <gen> across all reachable hosts.
+count() {
+    local gen=$1 total=0 n
+    for h in $(hosts); do
+        n=$($SSH "$h" "stat -c %s $REMOTE/data/gen$gen.bin 2>/dev/null || echo 0" 2>/dev/null || echo 0)
+        total=$((total + n / RECORD))
+    done
+    echo "$total"
+}
+
 cmd=${1:-}
 shift || true
 case "$cmd" in
@@ -163,5 +202,6 @@ case "$cmd" in
     status) status ;;
     stop) stop ;;
     collect) collect "$@" ;;
+    count) count "$@" ;;
     *) sed -n '2,12p' "$0"; exit 2 ;;
 esac

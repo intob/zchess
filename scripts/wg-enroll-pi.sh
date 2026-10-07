@@ -7,7 +7,8 @@
 #
 # Refuses Pis that still accept SSH passwords: once on the overlay, the Pi's
 # SSH key check is the boundary against the internet-facing hub.
-# Overlay IPs must lie in 10.99.0.8/29 (the hub's laptop->Pi forwarding rule).
+# Overlay IPs must lie in 10.99.0.8/29 or 10.99.0.16/29 (the hub's laptop->Pi
+# forwarding rules).
 set -euo pipefail
 
 LAN=$1

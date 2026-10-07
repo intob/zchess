@@ -4,3 +4,7 @@ pi1.local
 pi2.local
 pi3.local
 pi4.local
+pi5.local
+# Hetzner VM (also the WireGuard hub); x86-64, no thermal sensor, runs at nice 19.
+bitch-box
+pi6.local

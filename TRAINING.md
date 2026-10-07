@@ -45,16 +45,47 @@ caffeinate -i bash -c 'PROMOTE=1 scripts/experiments.sh && GENS=5 NODES=10000 PO
 
 - [x] `all4-wdl10`: all four generations, WDL 0.1. **H1: +146 ± 49** vs `exp-all4` (+103 =37 −34, 174 games). **Promoted.** Search scores are far better labels than results of fast adjudicated games
 - [x] `all4-e30`: all four generations, 30 epochs. Inconclusive: −2 ± 13 after 2000 games. More epochs don't help at this data size
-- [ ] gen4: 20M @ 10k nodes with `exp-all4-wdl10`, trained on gen0–4, plus 350k positions from pi1 (staged in `data/cluster/`, appended before training). pi1 was stopped at 80 °C, then brought back at 12:49 under a thermal guard (`scripts/pi-thermal-guard.sh`: pause datagen at 75 °C, resume at 68 °C) for the rest of gen4 (~200 pos/s per Pi 5 at 10k nodes while running)
+- [x] gen4: 20M on the Mac @ 10k nodes with `exp-all4-wdl10`, plus 6.7M from the cluster (5 Pis + bitch-box), trained on gen0–4 (~47M positions) with WDL 0.1. **H1: +67 ± 29** vs `exp-all4-wdl10` (+199 =111 −118, 428 games). **Promoted: current best.** (pi5's 837k offline positions were collected afterwards into `gen4.bin`, total 27.6M.)
 
-Note for the next training run: the default `--wdl` (0.25) is now known to be too high; use 0.1.
+The trainer's default `--wdl` is now 0.1.
+
+### External rating: gen4 vs Stockfish (2026-10-07)
+`scripts/gauntlet.sh`: fastchess, 10+0.1 s, 1 thread, book openings, 200 games per level
+against Stockfish 19 with `UCI_LimitStrength` / `UCI_Elo`:
+
+| Stockfish UCI_Elo | Result | Score | Implied gen4 rating |
+|---|---|---|---|
+| 2200 | +199 =0 −1 | 99.5% | (too lopsided) |
+| 2500 | +195 =3 −2 | 98.3% | (too lopsided) |
+| 2800 | +149 =36 −15 | 83.5% | ~3080 ± 48 |
+| 3000 | +83 =68 −49 | 58.5% | ~3060 ± 38 |
+| 3190 (max) | +35 =74 −91 | 36.0% | ~3090 ± 33 |
+
+**gen4 ≈ 3080 on Stockfish's UCI_Elo scale.** The limiter is calibrated at slower time
+controls, so this is a consistent yardstick between nets rather than an official rating.
+
+### Run 3: gen5 with the opening-book A/B test (started 2026-10-07 15:45)
+`scripts/ab-book.sh`: 12M positions each at 10k nodes with gen4. A = book openings
+(cluster), B = random openings (Mac). Both trimmed to equal size; two nets trained
+identically on gen0–4 + A or + B; SPRT A vs B (book openings), then the winner vs gen4.
+
+- [ ] A vs B verdict
+- [ ] winner vs gen4
+- Early observation: book-opening games are drawn ~46% of the time vs ~38% from random openings.
 
 ### Pi cluster and remote access (2026-10-07)
-Four Pi 5s (`pi1`–`pi4`) generate data next to the Mac, each under a thermal
-guard (pause at 75 °C, resume at 68 °C). They dial out over WireGuard to the
+Six Pi 5s (`pi1`–`pi6`) and the `bitch-box` VM generate data next to the Mac. On
+each host datagen runs as a systemd service (`zchess-datagen`, via
+`scripts/run-datagen.sh`): it comes back after reboots, power cuts and crashes,
+with a fresh seed each start, and `cluster.sh stop`/`collect` disable it. Each Pi
+runs a thermal guard (pause at 75 °C, resume at 68 °C). They dial out over WireGuard to the
 `bitch-box` hub, so the laptop reaches them from anywhere as `pi1-wg`…`pi4-wg`
-(`10.99.0.11`–`.14`). SSH is key-only, the hub can't reach them, and only the
+(`10.99.0.11`–`.16`). SSH is key-only, the hub can't reach them, and only the
 laptop's overlay addresses may SSH in. Nothing at home accepts inbound traffic.
+
+Known issue: pi5 and pi6 dropped off Wi-Fi a few minutes into full load (generation
+continued offline). pi5 is fine on Ethernet; suspect power (Pi 5 needs a 5 V / 5 A
+supply under sustained load).
 
 ```
 scripts/cluster.sh status                        # from anywhere (cluster/hosts.txt = overlay)
@@ -88,11 +119,13 @@ GENS=5 NODES=10000 POSITIONS=20000000 caffeinate -i scripts/pipeline.sh
 
 (gen0–3 are skipped as already done; this produces gen4 trained on gen2–4.)
 
-### Step 3: bigger net, once there are ~30M+ good positions
-512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process
-`match` can't compare a 512 net with a 256 net. That needs a build option per
-size plus `cutechess-cli` for cross-binary matches, or a runtime-sized network.
+### Step 3: bigger net (next, after gen5; ~70M positions by then)
+512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
+can't compare a 512 net with a 256 net: build per size and SPRT the two binaries
+with fastchess (now installed in `~/zchess-tools`).
 
 ### Later
+- Search: singular extensions, continuation history, correction history (each
+  SPRT'd binary vs binary with fastchess).
 - King-relative input buckets (big gain in strong engines, but data-hungry).
-- Search parameter tuning (separate from training).
+- A playing-strength setting for practice games.

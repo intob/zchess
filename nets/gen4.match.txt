@@ -1,0 +1,4 @@
+games 428  +199 =111 -118  Elo 66.6 +/- 28.7  LLR 3.06   
+
+A vs B: +199 =111 -118  score 59.5%  Elo 66.6 +/- 28.7
+SPRT [0, 10]: LLR 3.06 (bounds +/-2.94) H1 accepted (A is stronger)

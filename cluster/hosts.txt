@@ -5,3 +5,7 @@ pi1-wg
 pi2-wg
 pi3-wg
 pi4-wg
+pi5-wg
+pi6-wg
+# Hetzner VM (also the WireGuard hub); x86-64, no thermal sensor, runs at nice 19.
+bitch-box

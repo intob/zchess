@@ -19,6 +19,12 @@ datagen_pid() {
 
 trap '[ -n "$pid" ] && kill -CONT "$pid" 2>/dev/null; echo "$(date +%T) guard stopped, datagen resumed"; exit 0' TERM INT
 
+# Cloud VMs have no SoC sensor; there is nothing to guard.
+if [ ! -r "$SENSOR" ]; then
+    echo "$(date +%T) no thermal sensor ($SENSOR); guard not needed, exiting"
+    exit 0
+fi
+
 echo "$(date +%T) guard started: pause at ${HIGH}C, resume at ${LOW}C"
 while :; do
     pid=$(datagen_pid)

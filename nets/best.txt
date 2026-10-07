@@ -1,1 +1,1 @@
-nets/exp-all4-wdl10.nnue
+nets/gen4.nnue

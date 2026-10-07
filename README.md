@@ -8,7 +8,8 @@ trainer and the match runner are one binary.
 zig build                     # ReleaseFast by default
 zig build test                # unit tests (perft, NNUE incremental updates, SEE, data format)
 ./zig-out/bin/zchess play     # play against it in the terminal (--black, --time 5, hint/undo/moves)
-./zig-out/bin/zchess viz nets/gen2.nnue   # "brain scan" poster of a network -> nets/gen2.png
+./zig-out/bin/zchess viz nets/gen4.nnue   # "brain scan" poster of a network -> nets/gen4.png
+./zig-out/bin/zchess review --user <name> games.pgn   # mistakes, blunders, annotated PGN
 ./zig-out/bin/zchess          # UCI mode: point any chess GUI at this binary
 ./zig-out/bin/zchess perft-suite
 ./zig-out/bin/zchess bench
@@ -99,6 +100,16 @@ datagen, more positions per generation, and a wider hidden layer.
   and fibres from pieces to neurons and from neurons to the output. Below that are
   the piece values and square tables the network learned, measured by adding
   pieces to real positions. The training scripts render one for every new net.
+
+## Game review
+
+`zchess review --user <name> <pgn files>` searches every position of a player's
+games and flags inaccuracies, mistakes and blunders by lost winning chances
+(Lichess's win% method), each with a plain-language label (hung a piece, missed
+a capture, missed or allowed mate), the better move and its line. It writes a
+JSON report and an annotated PGN; `scripts/review-report.py review.json >
+report.html` turns the JSON into a page with puzzles made from the player's own
+mistakes (vector pieces: cburnett, GPLv2+).
 
 ## Formats
 
