@@ -328,13 +328,33 @@ pub const Searcher = struct {
         return best;
     }
 
+    /// The principal variation, cut at the first move that isn't legal in the
+    /// position it would be played from. GUIs replay the PV and reject the
+    /// whole info line if any move is illegal.
+    pub fn legalPv(self: *const Searcher) []const Move {
+        const pv = self.pv[0][0..self.pv_len[0]];
+        var pos = self.root;
+        for (pv, 0..) |m, i| {
+            var list = MoveList{};
+            movegen.generate(&pos, &list, .all);
+            var ok = false;
+            for (list.slice()) |l| if (l.eql(m)) {
+                ok = true;
+                break;
+            };
+            if (!ok) return pv[0..i];
+            pos = pos.makeMove(m);
+        }
+        return pv;
+    }
+
     fn report(self: *Searcher, o: *Output, depth: i32, score: i32) void {
         const ms: u64 = @intCast(@max(self.elapsedMs(), 0));
         const nodes = self.totalNodes();
         const nps = nodes * 1000 / @max(ms, 1);
         var pv_buf: [MAX_PLY * 6]u8 = undefined;
         var w: Io.Writer = .fixed(&pv_buf);
-        for (self.pv[0][0..self.pv_len[0]]) |m| {
+        for (self.legalPv()) |m| {
             var b: [5]u8 = undefined;
             w.print(" {s}", .{m.toUci(&b)}) catch break;
         }
@@ -609,4 +629,36 @@ test "see basics" {
     // Queen takes pawn defended by pawn: loses material.
     const p2 = try Position.fromFen("4k3/8/2p5/3p4/8/8/3Q4/4K3 w - - 0 1");
     try std.testing.expect(!see(&p2, Move.init(11, 35, Move.CAPTURE), 0));
+}
+
+test "principal variations are legal" {
+    atk.init();
+    const gpa = std.testing.allocator;
+    var tt = try TT.init(gpa, 16);
+    defer tt.deinit(gpa);
+    var stop = std.atomic.Value(bool).init(false);
+    const s = try Searcher.create(gpa, std.testing.io, &tt, null, &stop);
+    defer gpa.destroy(s);
+    const fens = [_][]const u8{
+        position.START_FEN,
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1", // mate in 1
+        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4", // Qxf7#
+        "8/8/8/8/8/5k2/8/4K2R w K - 0 1", // KR vs K
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "2kr3r/ppp2ppp/2n5/2b1q3/4P3/2P2N2/PP1Q1PPP/RNB1KB1R b KQ - 0 10",
+        "6k1/5p2/6p1/8/7p/8/6PP/6K1 b - - 0 1",
+    };
+    var illegal: usize = 0;
+    for (fens) |fen| {
+        const pos = try Position.fromFen(fen);
+        tt.clear();
+        s.clearHistory();
+        s.setPosition(&pos, &.{});
+        for (1..13) |d| {
+            _ = s.search(.{ .depth = @intCast(d) });
+            if (s.legalPv().len != s.pv_len[0]) illegal += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), illegal);
 }
