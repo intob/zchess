@@ -37,6 +37,16 @@ pub const Limits = struct {
     hard_ms: i64 = 0,
 };
 
+pub const MAX_MULTIPV = 16;
+
+/// One reported line (MultiPV): its first move, score and principal variation.
+pub const Line = struct {
+    move: Move,
+    score: i32,
+    pv: [MAX_PLY]Move,
+    pv_len: usize,
+};
+
 pub const Result = struct {
     move: Move,
     score: i32,
@@ -123,6 +133,23 @@ pub fn see(pos: *const Position, m: Move, threshold: i32) bool {
     return res != 0;
 }
 
+/// Number of leading moves of `pv` that are legal when played from `root`.
+fn legalPrefix(root: *const Position, pv: []const Move) usize {
+    var pos = root.*;
+    for (pv, 0..) |m, i| {
+        var list = MoveList{};
+        movegen.generate(&pos, &list, .all);
+        var ok = false;
+        for (list.slice()) |l| if (l.eql(m)) {
+            ok = true;
+            break;
+        };
+        if (!ok) return i;
+        pos = pos.makeMove(m);
+    }
+    return pv.len;
+}
+
 inline fn scoreToTT(s: i32, ply: usize) i32 {
     const p: i32 = @intCast(ply);
     if (s >= MATE_BOUND) return s + p;
@@ -172,6 +199,14 @@ pub const Searcher = struct {
     stopped: bool = false,
     root_depth: i32 = 0,
     root_best: Move = Move.none,
+    /// Number of lines to search and report (UCI MultiPV); 1 = normal search.
+    multipv: usize = 1,
+    /// Root moves skipped in the current search: lines already found this iteration.
+    excluded: [MAX_MULTIPV]Move = undefined,
+    n_excluded: usize = 0,
+    /// Lines of the last completed iteration, best first.
+    lines: [MAX_MULTIPV]Line = undefined,
+    n_lines: usize = 0,
 
     root: Position = undefined,
     keys: [MAX_KEYS]u64 = undefined,
@@ -308,24 +343,59 @@ pub const Searcher = struct {
         if (list.len == 0) return .{ .move = Move.none, .score = if (self.root.inCheck()) -MATE else 0, .depth = 0 };
 
         var best = Result{ .move = list.moves[0], .score = 0, .depth = 0 };
-        var prev: i32 = 0;
+        const n_lines = @min(@max(self.multipv, 1), list.len, MAX_MULTIPV);
+        var prev = [_]i32{0} ** MAX_MULTIPV;
+        var lines: [MAX_MULTIPV]Line = undefined;
+        self.n_lines = 0;
         var depth: i32 = 1;
-        while (depth <= limits.depth) : (depth += 1) {
+        iterations: while (depth <= limits.depth) : (depth += 1) {
             self.root_depth = depth;
             self.seldepth = 0;
-            const score = self.aspiration(depth, prev);
-            if (self.root_best.data != 0) best.move = self.root_best;
-            if (self.stopped) break;
-            best.score = score;
-            best.depth = depth;
-            prev = score;
+            // Line k is the best move once lines 0..k-1 are excluded at the root.
+            for (0..n_lines) |k| {
+                for (0..k) |j| self.excluded[j] = lines[j].move;
+                self.n_excluded = k;
+                self.root_best = Move.none;
+                const score = self.aspiration(depth, prev[k]);
+                if (self.stopped) {
+                    if (k == 0) {
+                        if (self.root_best.data != 0) best.move = self.root_best;
+                    } else {
+                        best.move = lines[0].move;
+                        best.score = lines[0].score;
+                    }
+                    break :iterations;
+                }
+                const pv = self.pv[0][0..self.pv_len[0]];
+                const line = &lines[k];
+                line.move = if (self.root_best.data != 0) self.root_best else if (pv.len > 0) pv[0] else list.moves[0];
+                line.score = score;
+                line.pv_len = legalPrefix(&self.root, pv);
+                @memcpy(line.pv[0..line.pv_len], pv[0..line.pv_len]);
+                prev[k] = score;
+            }
+            // Excluded searches shouldn't beat earlier lines, but search noise can.
+            std.mem.sort(Line, lines[0..n_lines], {}, struct {
+                fn better(_: void, a: Line, b: Line) bool {
+                    return a.score > b.score;
+                }
+            }.better);
+            @memcpy(self.lines[0..n_lines], lines[0..n_lines]);
+            self.n_lines = n_lines;
+            best = .{ .move = lines[0].move, .score = lines[0].score, .depth = depth };
             self.shared_nodes.store(self.nodes, .monotonic);
-            if (self.out) |o| self.report(o, depth, score);
+            if (self.out) |o| self.report(o, depth);
             if (limits.soft_nodes != 0 and self.nodes >= limits.soft_nodes) break;
             if (limits.soft_ms != 0 and self.elapsedMs() >= limits.soft_ms) break;
         }
+        self.n_excluded = 0;
         self.shared_nodes.store(self.nodes, .monotonic);
         return best;
+    }
+
+    inline fn isExcluded(self: *const Searcher, m: Move) bool {
+        for (self.excluded[0..self.n_excluded]) |e| if (e.eql(m)) return true;
+        return false;
     }
 
     /// The principal variation, cut at the first move that isn't legal in the
@@ -333,41 +403,33 @@ pub const Searcher = struct {
     /// whole info line if any move is illegal.
     pub fn legalPv(self: *const Searcher) []const Move {
         const pv = self.pv[0][0..self.pv_len[0]];
-        var pos = self.root;
-        for (pv, 0..) |m, i| {
-            var list = MoveList{};
-            movegen.generate(&pos, &list, .all);
-            var ok = false;
-            for (list.slice()) |l| if (l.eql(m)) {
-                ok = true;
-                break;
-            };
-            if (!ok) return pv[0..i];
-            pos = pos.makeMove(m);
-        }
-        return pv;
+        return pv[0..legalPrefix(&self.root, pv)];
     }
 
-    fn report(self: *Searcher, o: *Output, depth: i32, score: i32) void {
+    fn report(self: *Searcher, o: *Output, depth: i32) void {
         const ms: u64 = @intCast(@max(self.elapsedMs(), 0));
         const nodes = self.totalNodes();
         const nps = nodes * 1000 / @max(ms, 1);
-        var pv_buf: [MAX_PLY * 6]u8 = undefined;
-        var w: Io.Writer = .fixed(&pv_buf);
-        for (self.legalPv()) |m| {
-            var b: [5]u8 = undefined;
-            w.print(" {s}", .{m.toUci(&b)}) catch break;
+        const hashfull = self.tt.hashfull();
+        for (self.lines[0..self.n_lines], 1..) |*line, k| {
+            var pv_buf: [MAX_PLY * 6]u8 = undefined;
+            var w: Io.Writer = .fixed(&pv_buf);
+            for (line.pv[0..line.pv_len]) |m| {
+                var b: [5]u8 = undefined;
+                w.print(" {s}", .{m.toUci(&b)}) catch break;
+            }
+            var sc_buf: [32]u8 = undefined;
+            const score = line.score;
+            const sc = if (score >= MATE_BOUND)
+                std.fmt.bufPrint(&sc_buf, "mate {d}", .{@divTrunc(MATE - score + 1, 2)}) catch ""
+            else if (score <= -MATE_BOUND)
+                std.fmt.bufPrint(&sc_buf, "mate -{d}", .{@divTrunc(MATE + score, 2)}) catch ""
+            else
+                std.fmt.bufPrint(&sc_buf, "cp {d}", .{score}) catch "";
+            o.print("info depth {d} seldepth {d} multipv {d} score {s} nodes {d} nps {d} hashfull {d} time {d} pv{s}\n", .{
+                depth, self.seldepth, k, sc, nodes, nps, hashfull, ms, w.buffered(),
+            });
         }
-        var sc_buf: [32]u8 = undefined;
-        const sc = if (score >= MATE_BOUND)
-            std.fmt.bufPrint(&sc_buf, "mate {d}", .{@divTrunc(MATE - score + 1, 2)}) catch ""
-        else if (score <= -MATE_BOUND)
-            std.fmt.bufPrint(&sc_buf, "mate -{d}", .{@divTrunc(MATE + score, 2)}) catch ""
-        else
-            std.fmt.bufPrint(&sc_buf, "cp {d}", .{score}) catch "";
-        o.print("info depth {d} seldepth {d} score {s} nodes {d} nps {d} hashfull {d} time {d} pv{s}\n", .{
-            depth, self.seldepth, sc, nodes, nps, self.tt.hashfull(), ms, w.buffered(),
-        });
     }
 
     fn aspiration(self: *Searcher, depth: i32, prev: i32) i32 {
@@ -475,6 +537,7 @@ pub const Searcher = struct {
 
         for (0..sm.list.len) |i| {
             const m = sm.pick(i);
+            if (root and self.n_excluded > 0 and self.isExcluded(m)) continue;
             const quiet = !m.isNoisy();
 
             if (!root and best_score > -MATE_BOUND and has_material) {
@@ -554,7 +617,9 @@ pub const Searcher = struct {
         }
 
         const bound: tt_mod.Bound = if (best_score >= beta) .lower else if (best_move.data != 0) .exact else .upper;
-        self.tt.store(pos.key, best_move, scoreToTT(best_score, ply), if (in_check) EVAL_NONE else static_eval, depth, bound);
+        // With root moves excluded (MultiPV) this isn't the root's true value.
+        if (!(root and self.n_excluded > 0))
+            self.tt.store(pos.key, best_move, scoreToTT(best_score, ply), if (in_check) EVAL_NONE else static_eval, depth, bound);
         return best_score;
     }
 

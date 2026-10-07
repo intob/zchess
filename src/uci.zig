@@ -28,6 +28,7 @@ pub const Engine = struct {
     hash_mb: usize = 64,
     net: ?*nnue.Network = null,
     use_nnue: bool = true,
+    multipv: usize = 1,
     stop: std.atomic.Value(bool) = .init(false),
     searchers: std.ArrayList(*search.Searcher) = .empty,
     search_thread: ?std.Thread = null,
@@ -50,6 +51,7 @@ pub const Engine = struct {
         for (0..@max(n, 1)) |_| try e.searchers.append(e.gpa, try search.Searcher.create(e.gpa, e.io, &e.tt, e.activeNet(), &e.stop));
         for (e.searchers.items) |s| s.peers = e.searchers.items;
         e.searchers.items[0].out = e.out;
+        e.searchers.items[0].multipv = e.multipv;
     }
 
     fn waitSearch(e: *Engine) void {
@@ -198,6 +200,9 @@ pub const Engine = struct {
             e.use_nnue = true;
             try e.setThreads(e.searchers.items.len);
             e.out.print("info string loaded network {s}\n", .{value});
+        } else if (std.ascii.eqlIgnoreCase(name, "MultiPV")) {
+            e.multipv = std.math.clamp(std.fmt.parseInt(usize, value, 10) catch 1, 1, search.MAX_MULTIPV);
+            e.searchers.items[0].multipv = e.multipv;
         } else if (std.ascii.eqlIgnoreCase(name, "UseNNUE")) {
             e.use_nnue = std.ascii.eqlIgnoreCase(value, "true");
             try e.setThreads(e.searchers.items.len);
@@ -227,6 +232,7 @@ pub const Engine = struct {
             e.out.print("option name Threads type spin default 1 min 1 max 256\n", .{});
             e.out.print("option name EvalFile type string default <embedded>\n", .{});
             e.out.print("option name UseNNUE type check default true\n", .{});
+            e.out.print("option name MultiPV type spin default 1 min 1 max {d}\n", .{search.MAX_MULTIPV});
             e.out.print("uciok\n", .{});
         } else if (std.mem.eql(u8, cmd, "isready")) {
             e.out.print("readyok\n", .{});
