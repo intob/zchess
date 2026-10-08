@@ -138,7 +138,18 @@ GENS=5 NODES=10000 POSITIONS=20000000 caffeinate -i scripts/pipeline.sh
   book openings, 10k nodes. Collect in the morning: `scripts/cluster.sh collect 6book`.
   pi6 still offline (Wi-Fi under load); its service is still on `gen5book`.
 
-### Step 3: bigger net (trained; verdict pending overnight)
+Overnight results (bitch-box):
+- **Width: h512-all vs h256-all (same data), 8+0.08: +38 ± 17, SPRT H1** at 686 games
+  (+206 =349 −131). The 512-wide net wins even after paying for its lower speed.
+- **Data: h256-all vs gen5, 10k nodes: −17 ± 13**, inconclusive (LLR −2.33, 2000 games).
+  Training 256-wide on all of gen0–5 didn't beat gen5 (gen0–4 + book data); suspect
+  the oldest, weakest generations dilute the data. Next: a window of recent gens.
+- **gen5 gauntlet on bitch-box: ~3045** (2800 77.8%, 3000 54.5%, 3190 36.0%) vs gen4
+  ~2980 on the same host, i.e. about +60–65 against Stockfish.
+- Running: **h512-all vs gen5, 8+0.08, SPRT [0,10]** (`~/zchess-overnight/run-512-vs-gen5.sh`),
+  the promotion decision for the 512-wide net.
+
+### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
 can't compare a 512 net with a 256 net: build per size and SPRT the two binaries
 with fastchess (now installed in `~/zchess-tools`).
