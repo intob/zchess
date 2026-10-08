@@ -26,6 +26,11 @@ const EVAL_NONE: i32 = -32002;
 const MAX_KEYS = 512;
 /// Continuation-history index (piece * 64 + to) of a null move or no move.
 const NO_CONT: u16 = 0xFFFF;
+/// Correction history: per side to move and pawn structure, a running average
+/// of (search score - static eval), in 1/CORR_GRAIN cp.
+const CORR_SIZE = 16384;
+const CORR_GRAIN = 256;
+const CORR_MAX = CORR_GRAIN * 64;
 
 pub const Limits = struct {
     depth: i32 = MAX_PLY - 1,
@@ -223,6 +228,7 @@ pub const Searcher = struct {
     /// for the moves one and two plies back. Zeroed in create (too big for a
     /// comptime default).
     cont_hist: [12 * 64][12 * 64]i16 = undefined,
+    corr_hist: [2][CORR_SIZE]i32 = std.mem.zeroes([2][CORR_SIZE]i32),
     /// Continuation index of the move played at each ply.
     moved: [MAX_PLY + 2]u16 = undefined,
     killers: [MAX_PLY + 2][2]Move = undefined,
@@ -243,6 +249,18 @@ pub const Searcher = struct {
     pub fn clearHistory(self: *Searcher) void {
         self.history = std.mem.zeroes([2][64][64]i32);
         @memset(std.mem.sliceAsBytes(&self.cont_hist), 0);
+        self.corr_hist = std.mem.zeroes([2][CORR_SIZE]i32);
+    }
+
+    inline fn corrEntry(self: *Searcher, pos: *const Position) *i32 {
+        const pawns = pos.pieces[bb.PAWN];
+        const h = (pawns & pos.colors[bb.WHITE]) *% 0x9E3779B97F4A7C15 ^ (pawns & pos.colors[bb.BLACK]) *% 0xC2B2AE3D27D4EB4F;
+        return &self.corr_hist[pos.side][@intCast(h >> 50)];
+    }
+
+    /// Static eval adjusted by the correction history.
+    inline fn corrected(self: *Searcher, pos: *const Position, raw: i32) i32 {
+        return std.math.clamp(raw + @divTrunc(self.corrEntry(pos).*, CORR_GRAIN), -MATE_BOUND + 1, MATE_BOUND - 1);
     }
 
     inline fn contIndex(pos: *const Position, m: Move) u16 {
@@ -551,10 +569,12 @@ pub const Searcher = struct {
             }
         }
 
+        var raw_eval: i32 = EVAL_NONE;
         var static_eval: i32 = EVAL_NONE;
         var eval: i32 = EVAL_NONE;
         if (!in_check) {
-            static_eval = if (tt_eval != EVAL_NONE) tt_eval else self.evaluate(pos, ply);
+            raw_eval = if (tt_eval != EVAL_NONE) tt_eval else self.evaluate(pos, ply);
+            static_eval = self.corrected(pos, raw_eval);
             eval = static_eval;
             if (tt_bound == .exact or (tt_bound == .lower and tt_score > eval) or (tt_bound == .upper and tt_score < eval))
                 eval = tt_score;
@@ -685,8 +705,20 @@ pub const Searcher = struct {
 
         const bound: tt_mod.Bound = if (best_score >= beta) .lower else if (best_move.data != 0) .exact else .upper;
         // With root moves excluded (MultiPV) this isn't the root's true value.
-        if (!(root and self.n_excluded > 0))
-            self.tt.store(pos.key, best_move, scoreToTT(best_score, ply), if (in_check) EVAL_NONE else static_eval, depth, bound);
+        if (!(root and self.n_excluded > 0)) {
+            self.tt.store(pos.key, best_move, scoreToTT(best_score, ply), raw_eval, depth, bound);
+            // Learn how far the static eval was off, when the search score says
+            // something about it: not from noisy best moves, and only in the
+            // direction the bound allows.
+            if (!in_check and (best_move.data == 0 or !best_move.isNoisy()) and @abs(best_score) < MATE_BOUND and
+                !(bound == .lower and best_score <= static_eval) and !(bound == .upper and best_score >= static_eval))
+            {
+                const e = self.corrEntry(pos);
+                const w: i32 = @min(depth + 1, 16);
+                const target = (best_score - raw_eval) * CORR_GRAIN;
+                e.* = std.math.clamp(@divTrunc(e.* * (256 - w) + target * w, 256), -CORR_MAX, CORR_MAX);
+            }
+        }
         return best_score;
     }
 
@@ -709,9 +741,11 @@ pub const Searcher = struct {
         }
 
         var best: i32 = -INF;
+        var raw_eval: i32 = EVAL_NONE;
         var stand_pat: i32 = EVAL_NONE;
         if (!in_check) {
-            stand_pat = if (tt_eval != EVAL_NONE) tt_eval else self.evaluate(pos, ply);
+            raw_eval = if (tt_eval != EVAL_NONE) tt_eval else self.evaluate(pos, ply);
+            stand_pat = self.corrected(pos, raw_eval);
             if (stand_pat >= beta) return stand_pat;
             if (stand_pat > alpha) alpha = stand_pat;
             best = stand_pat;
@@ -748,7 +782,7 @@ pub const Searcher = struct {
         }
 
         const bound: tt_mod.Bound = if (best >= beta) .lower else if (best_move.data != 0) .exact else .upper;
-        self.tt.store(pos.key, best_move, scoreToTT(best, ply), if (in_check) EVAL_NONE else stand_pat, 0, bound);
+        self.tt.store(pos.key, best_move, scoreToTT(best, ply), raw_eval, 0, bound);
         return best;
     }
 };
