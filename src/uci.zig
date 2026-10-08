@@ -76,7 +76,7 @@ pub const Engine = struct {
     fn think(e: *Engine, limits: search.Limits) void {
         e.tt.newSearch();
         const main = e.searchers.items[0];
-        if (e.limit_strength) return e.thinkLimited(main);
+        if (e.limit_strength) return e.thinkLimited(main, limits);
         var helpers: [256]?std.Thread = .{null} ** 256;
         for (e.searchers.items[1..], 0..) |s, i| {
             s.setPosition(&e.pos, e.game_keys.items);
@@ -107,10 +107,10 @@ pub const Engine = struct {
     }
 
     /// UCI_LimitStrength: one thread, a small search and a weighted pick
-    /// among candidate moves. Time limits don't apply (it moves quickly).
-    fn thinkLimited(e: *Engine, main: *search.Searcher) void {
+    /// among candidate moves, within the game's time limits.
+    fn thinkLimited(e: *Engine, main: *search.Searcher, limits: search.Limits) void {
         main.setPosition(&e.pos, e.game_keys.items);
-        const c = strength.choose(main, e.prng.random(), e.elo);
+        const c = strength.choose(main, e.prng.random(), e.elo, limits);
         while (e.pondering.load(.monotonic) and !e.stop_cmd.load(.monotonic)) {
             e.io.sleep(.fromMilliseconds(2), .awake) catch {};
         }

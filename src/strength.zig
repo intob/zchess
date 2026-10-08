@@ -19,8 +19,29 @@ pub const Params = struct {
     temperature: f64, // centipawns
 };
 
+/// Calibration: requested rating -> internal setting, from matches against
+/// Stockfish 19's limiter (2026-10-08: internal 1400 played like ~1670,
+/// internal 2000 like ~2530 and internal ~2150 like ~2730; a check of the
+/// table gave 1400 -7±65, 2000 +31±63). Linear between points; below 1670
+/// extrapolated.
+const calibration = [_][2]f64{
+    .{ 100, 300 },
+    .{ 1670, 1400 },
+    .{ 2530, 2000 },
+    .{ 2730, 2150 },
+    .{ 3000, 3000 },
+};
+
+fn internalElo(requested: f64) f64 {
+    for (calibration[1..], 1..) |hi, i| {
+        const lo = calibration[i - 1];
+        if (requested <= hi[0]) return lo[1] + (requested - lo[0]) * (hi[1] - lo[1]) / (hi[0] - lo[0]);
+    }
+    return calibration[calibration.len - 1][1];
+}
+
 pub fn params(elo: u32) Params {
-    const e: f64 = @floatFromInt(std.math.clamp(elo, MIN_ELO, MAX_ELO));
+    const e: f64 = internalElo(@floatFromInt(std.math.clamp(elo, MIN_ELO, MAX_ELO)));
     const t = (e - MIN_ELO) / (MAX_ELO - MIN_ELO); // 0 at the bottom, 1 at the top
     const nodes = 50.0 * std.math.pow(f64, 40_000.0, t); // 50 .. 2M
     const lines = 1.0 + 19.0 * (1.0 - t) * (1.0 - t); // 20 .. 1
@@ -39,12 +60,17 @@ pub const Choice = struct {
 };
 
 /// Search at the strength of `elo` and pick a move as described above.
-pub fn choose(s: *search.Searcher, rng: std.Random, elo: u32) Choice {
+/// `clock` carries the time limits of the game (soft_ms / hard_ms); the
+/// search stops at whichever comes first, the clock or the node budget.
+pub fn choose(s: *search.Searcher, rng: std.Random, elo: u32, clock: search.Limits) Choice {
     const p = params(elo);
     const saved = s.multipv;
     defer s.multipv = saved;
     s.multipv = p.lines;
-    const r = s.search(.{ .soft_nodes = p.nodes, .nodes = p.nodes * 4 });
+    var limits = clock;
+    limits.soft_nodes = p.nodes;
+    limits.nodes = p.nodes * 4;
+    const r = s.search(limits);
     if (s.n_lines <= 1 or p.temperature <= 0) return .{ .result = r, .line = 0 };
 
     // Mate scores would swamp the weights; clamp them to a big but finite edge.
