@@ -346,6 +346,24 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
         try writeJsonString(w, evals[f.ply + 1].best.toUci(&ub));
         try w.writeAll(",\"fen_after\":");
         try writeJsonString(w, positions.items[f.ply + 1].toFen(&fen_buf));
+        // For Lichess-style puzzles: the position before the opponent's last move,
+        // and that move (puzzles start by playing it).
+        if (f.ply > 0) {
+            try w.writeAll(",\"setup_fen\":");
+            try writeJsonString(w, positions.items[f.ply - 1].toFen(&fen_buf));
+            try w.writeAll(",\"setup_uci\":");
+            try writeJsonString(w, moves.items[f.ply - 1].toUci(&ub));
+        }
+        // The best line and the punishing line in UCI.
+        inline for (.{ .{ "best_line_uci", f.ply }, .{ "refutation_uci", f.ply + 1 } }) |spec| {
+            try w.print(",\"{s}\":[", .{spec[0]});
+            for (evals[spec[1]].pv[0..evals[spec[1]].pv_len], 0..) |m, k| {
+                var mb: [5]u8 = undefined;
+                if (k > 0) try w.writeByte(',');
+                try writeJsonString(w, m.toUci(&mb));
+            }
+            try w.writeByte(']');
+        }
         // Best line from this position, and the opponent's punishing reply.
         try w.writeAll(",\"best_line\":[");
         var lp = p.*;

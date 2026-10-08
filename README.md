@@ -114,6 +114,13 @@ JSON report and an annotated PGN; `scripts/review-report.py review.json >
 report.html` turns the JSON into a page with puzzles made from the player's own
 mistakes (vector pieces: cburnett, GPLv2+).
 
+`scripts/ec-sync.py [--user fingjoey]` is the En Croissant bridge: it fetches new
+Chess.com games, reviews them and writes one annotated PGN per game into
+`~/Documents/EnCroissant/zchess` (Files tab). It then runs `scripts/ec-puzzles.py`,
+which turns the mistakes into a puzzle database in En Croissant's own format
+("<user> mistakes" in the Puzzles tab): *spot the threat* (your bad move is played,
+find the punishment) and *find the win* (find the capture or mate you missed).
+
 ## Formats
 
 - **Training record** (32 bytes): `occ: u64`, 32 packed piece nibbles,

@@ -6,6 +6,7 @@ and write one annotated PGN per game into En Croissant's Files folder
 Each game gets evaluations on every move, ?!/?/?? marks, the better line as a
 variation, a plain-language label per mistake and a summary comment. Games
 already reviewed are remembered in <out>/.reviewed and skipped next time.
+The mistakes also become a puzzle database (scripts/ec-puzzles.py).
 
 usage: scripts/ec-sync.py [--user fingjoey] [--months 2] [--threads N]
                           [--nodes 300000] [--out ~/Documents/EnCroissant/zchess] [--all]
@@ -132,6 +133,8 @@ def main() -> int:
     seen |= {header(g, "Link") for g in new}
     seen_file.write_text("\n".join(sorted(seen)) + "\n")
     print(f"wrote {written} annotated games to {out} (open them from En Croissant's Files tab)")
+    # Turn the mistakes into puzzles (En Croissant's Puzzles tab).
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "ec-puzzles.py"), str(cumulative)], check=True)
     return 0
 
 
