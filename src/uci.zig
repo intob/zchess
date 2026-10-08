@@ -11,6 +11,7 @@ const nnue = @import("nnue.zig");
 const hce = @import("eval.zig");
 const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
+const strength = @import("strength.zig");
 
 const Position = position.Position;
 const Move = position.Move;
@@ -31,6 +32,10 @@ pub const Engine = struct {
     multipv: usize = 1,
     /// Safety margin (ms) kept off the clock for GUI and network delay.
     move_overhead: i64 = 30,
+    /// UCI_LimitStrength / UCI_Elo (see strength.zig).
+    limit_strength: bool = false,
+    elo: u32 = 1500,
+    prng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
     pondering: std.atomic.Value(bool) = .init(false),
     /// Set only by the `stop` command (the search also sets `stop` itself).
     stop_cmd: std.atomic.Value(bool) = .init(false),
@@ -42,6 +47,7 @@ pub const Engine = struct {
         const e = try gpa.create(Engine);
         e.* = .{ .gpa = gpa, .io = io, .out = out, .pos = Position.startpos(), .tt = try TT.init(gpa, 64) };
         e.net = try nnue.loadEmbedded(gpa);
+        e.prng = std.Random.DefaultPrng.init(@truncate(@as(u96, @bitCast(Io.Clock.real.now(io).toNanoseconds()))));
         try e.setThreads(1);
         return e;
     }
@@ -70,6 +76,7 @@ pub const Engine = struct {
     fn think(e: *Engine, limits: search.Limits) void {
         e.tt.newSearch();
         const main = e.searchers.items[0];
+        if (e.limit_strength) return e.thinkLimited(main);
         var helpers: [256]?std.Thread = .{null} ** 256;
         for (e.searchers.items[1..], 0..) |s, i| {
             s.setPosition(&e.pos, e.game_keys.items);
@@ -96,6 +103,23 @@ pub const Engine = struct {
             e.out.print("bestmove {s} ponder {s}\n", .{ r.move.toUci(&buf), line.?.pv[1].toUci(&pbuf) });
         } else {
             e.out.print("bestmove {s}\n", .{r.move.toUci(&buf)});
+        }
+    }
+
+    /// UCI_LimitStrength: one thread, a small search and a weighted pick
+    /// among candidate moves. Time limits don't apply (it moves quickly).
+    fn thinkLimited(e: *Engine, main: *search.Searcher) void {
+        main.setPosition(&e.pos, e.game_keys.items);
+        const c = strength.choose(main, e.prng.random(), e.elo);
+        while (e.pondering.load(.monotonic) and !e.stop_cmd.load(.monotonic)) {
+            e.io.sleep(.fromMilliseconds(2), .awake) catch {};
+        }
+        var buf: [5]u8 = undefined;
+        var pbuf: [5]u8 = undefined;
+        if (main.n_lines > c.line and main.lines[c.line].pv_len >= 2) {
+            e.out.print("bestmove {s} ponder {s}\n", .{ c.result.move.toUci(&buf), main.lines[c.line].pv[1].toUci(&pbuf) });
+        } else {
+            e.out.print("bestmove {s}\n", .{c.result.move.toUci(&buf)});
         }
     }
 
@@ -221,6 +245,10 @@ pub const Engine = struct {
             e.use_nnue = true;
             try e.setThreads(e.searchers.items.len);
             e.out.print("info string loaded network {s}\n", .{value});
+        } else if (std.ascii.eqlIgnoreCase(name, "UCI_LimitStrength")) {
+            e.limit_strength = std.ascii.eqlIgnoreCase(value, "true");
+        } else if (std.ascii.eqlIgnoreCase(name, "UCI_Elo")) {
+            e.elo = std.math.clamp(std.fmt.parseInt(u32, value, 10) catch 1500, strength.MIN_ELO, strength.MAX_ELO);
         } else if (std.ascii.eqlIgnoreCase(name, "Move Overhead")) {
             e.move_overhead = std.math.clamp(std.fmt.parseInt(i64, value, 10) catch 30, 0, 5000);
         } else if (std.ascii.eqlIgnoreCase(name, "Clear Hash")) {
@@ -264,6 +292,8 @@ pub const Engine = struct {
             e.out.print("option name Ponder type check default false\n", .{});
             e.out.print("option name Move Overhead type spin default 30 min 0 max 5000\n", .{});
             e.out.print("option name Clear Hash type button\n", .{});
+            e.out.print("option name UCI_LimitStrength type check default false\n", .{});
+            e.out.print("option name UCI_Elo type spin default 1500 min {d} max {d}\n", .{ strength.MIN_ELO, strength.MAX_ELO });
             e.out.print("uciok\n", .{});
         } else if (std.mem.eql(u8, cmd, "isready")) {
             e.out.print("readyok\n", .{});

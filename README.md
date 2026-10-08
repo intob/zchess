@@ -27,7 +27,10 @@ zig build test                # unit tests (perft, NNUE incremental updates, SEE
 | Evaluation | `nnue.zig` | (768 → 256)×2 → 1, SCReLU, 8 output buckets, int16 quantisation, NEON through `@Vector`, incremental accumulator updates |
 | Bootstrap eval | `eval.zig` | Tapered PSTs and mobility, used only to generate the first data |
 
-UCI options: `Hash`, `Threads`, `EvalFile` (path to a `.nnue`), `UseNNUE`.
+UCI options: `Hash`, `Threads`, `EvalFile` (path to a `.nnue`), `UseNNUE`, `MultiPV`,
+`Ponder`, `Move Overhead`, `Clear Hash`, and `UCI_LimitStrength` + `UCI_Elo` (100–3000:
+smaller search, more candidate moves and a weighted random pick at lower ratings;
+`zchess play --elo N` does the same in the terminal).
 Extra commands in UCI mode: `d` (show the board), `eval`, `perft <depth>`.
 
 ## Training pipeline

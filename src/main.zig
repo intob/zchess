@@ -149,4 +149,5 @@ test {
     _ = book;
     _ = @import("pgn.zig");
     _ = review;
+    _ = @import("strength.zig");
 }

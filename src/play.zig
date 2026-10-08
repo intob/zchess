@@ -10,12 +10,13 @@ const game = @import("game.zig");
 const cli = @import("cli.zig");
 const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
+const strength = @import("strength.zig");
 
 const Position = position.Position;
 const Move = position.Move;
 
 const help =
-    \\usage: zchess play [--black] [--time <seconds>] [--net <file|hce>] [--fen <fen>]
+    \\usage: zchess play [--black] [--time <seconds>] [--elo <100-3000>] [--net <file|hce>] [--fen <fen>]
     \\
     \\Enter moves as SAN (e4, Nf3, exd5, O-O, e8=Q) or coordinates (e2e4).
     \\Commands: moves, undo, flip, hint, help, quit
@@ -146,12 +147,14 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var p = cli.Parser{ .args = args };
     var human: bb.Color = bb.WHITE;
     var think_ms: i64 = 3000;
+    var elo: ?u32 = null;
     var net_path: []const u8 = "";
     var fen: []const u8 = position.START_FEN;
     while (p.next()) |a| {
         if (std.mem.eql(u8, a, "--black")) human = bb.BLACK
         else if (std.mem.eql(u8, a, "--white")) human = bb.WHITE
         else if (p.float(a, "--time")) |v| think_ms = @intFromFloat(@max(v, 0.05) * 1000)
+        else if (p.int(u32, a, "--elo")) |v| elo = std.math.clamp(v, strength.MIN_ELO, strength.MAX_ELO)
         else if (p.flag(a, "--net")) |v| net_path = v
         else if (p.flag(a, "--fen")) |v| fen = v
         else {
@@ -165,6 +168,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     defer tt.deinit(gpa);
     var stop = std.atomic.Value(bool).init(false);
     const engine = try search.Searcher.create(gpa, io, &tt, net, &stop);
+    var prng = std.Random.DefaultPrng.init(@truncate(@as(u96, @bitCast(Io.Clock.real.now(io).toNanoseconds()))));
     defer gpa.destroy(engine);
 
     var history: std.ArrayList(Position) = .empty;
@@ -253,7 +257,10 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         } else blk: {
             out.print("\nthinking...\n", .{});
             engine.setPosition(&pos, keys.items);
-            const r = engine.search(.{ .soft_ms = @divTrunc(think_ms * 6, 10), .hard_ms = think_ms });
+            const r = if (elo) |level|
+                strength.choose(engine, prng.random(), level).result
+            else
+                engine.search(.{ .soft_ms = @divTrunc(think_ms * 6, 10), .hard_ms = think_ms });
             var sb: [16]u8 = undefined;
             var scb: [32]u8 = undefined;
             const move_no = pos.fullmove;
