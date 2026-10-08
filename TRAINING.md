@@ -167,6 +167,17 @@ ignored the clock, fixed). With the calibration table in `src/strength.zig`:
 1400 −7 ± 65, 2000 +31 ± 63, 2600 +131 ± 65, so a fourth point (requested 2730
 → internal 2150) was added for the top end. Not yet re-measured; done with gen5w.
 
+### Search improvements (2026-10-08, Mac)
+Each one SPRT'd binary vs binary (`scripts/sprt.sh`, 8+0.08, [0, 5]) against the
+previous accepted change, all with gen6w embedded. Developed as stacked branches
+`search/conthist` → `search/corrhist` → `search/singular`.
+
+- [x] Continuation history (piece×to of the moves 1 and 2 plies back; in quiet
+  ordering and the LMR history term): **+25.7 ± 9.7, H1** at 1790 games
+  (+419 =1084 −287). Merged.
+- [ ] Correction history (pawn structure, per side to move), vs conthist: running.
+- [ ] Singular extensions (with multi-cut and negative extensions).
+
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
 can't compare a 512 net with a 256 net: build per size and SPRT the two binaries
