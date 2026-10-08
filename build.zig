@@ -38,6 +38,18 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&b.addInstallFile(png, "zchess.png").step);
     }
 
+    // Keep zchess's En Croissant entry (version, rating, settings) in step with
+    // what was just built; a no-op unless an entry points at this binary.
+    const want_ec = b.option(bool, "ec", "Update the En Croissant engine entry after building (default true)") orelse true;
+    if (want_ec and target.query.isNative()) {
+        const ec = b.addSystemCommand(&.{"python3"});
+        ec.addFileArg(b.path("scripts/ec-engine.py"));
+        ec.addFileArg(exe.getEmittedBin());
+        ec.addArg(b.getInstallPath(.bin, exe.out_filename));
+        if (net_path) |p| ec.addArg(p);
+        b.getInstallStep().dependOn(&ec.step);
+    }
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);

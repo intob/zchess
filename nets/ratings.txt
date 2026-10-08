@@ -1,0 +1,7 @@
+# Ratings on Stockfish 19's UCI_Elo scale: bitch-box gauntlets, 10+0.1, 1 thread,
+# mean of the implied ratings at UCI_Elo 2800/3000/3190 (scripts/remote-gauntlet.sh).
+# A yardstick between nets, not an official rating. Shown in En Croissant
+# (scripts/ec-engine.py).
+gen4 2980
+gen5 3045
+gen6w 3070
