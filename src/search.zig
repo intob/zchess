@@ -228,6 +228,8 @@ pub const Searcher = struct {
     killers: [MAX_PLY + 2][2]Move = undefined,
     evals: [MAX_PLY + 2]i32 = undefined,
     was_null: [MAX_PLY + 2]bool = undefined,
+    /// Move skipped at each ply by a singular-extension verification search.
+    singular: [MAX_PLY + 2]Move = undefined,
     pv: [MAX_PLY + 1][MAX_PLY + 1]Move = undefined,
     pv_len: [MAX_PLY + 1]usize = undefined,
     acc: [MAX_PLY + 2]nnue.Accumulator = undefined,
@@ -401,6 +403,7 @@ pub const Searcher = struct {
         self.root_best = Move.none;
         for (&self.killers) |*k| k.* = .{ Move.none, Move.none };
         self.was_null[0] = false;
+        for (&self.singular) |*m| m.* = Move.none;
         if (self.net) |n| nnue.refresh(n, &self.acc[0], &self.root);
 
         var list = MoveList{};
@@ -536,16 +539,22 @@ pub const Searcher = struct {
             if (alpha >= beta) return alpha;
         }
 
+        // In a singular verification search the TT entry is this node's own:
+        // its move is excluded and its score can't be trusted for cutoffs.
+        const excluded = self.singular[ply];
+        const verifying = excluded.data != 0;
         var tt_move = Move.none;
         var tt_score: i32 = 0;
         var tt_bound: tt_mod.Bound = .none;
+        var tt_depth: i32 = 0;
         var tt_eval: i32 = EVAL_NONE;
         if (self.tt.probe(pos.key)) |e| {
             tt_move = .{ .data = e.move };
             tt_score = scoreFromTT(e.score, ply);
             tt_bound = e.bound;
+            tt_depth = e.depth;
             tt_eval = e.eval;
-            if (!pv_node and e.depth >= depth) {
+            if (!pv_node and !verifying and e.depth >= depth) {
                 if (tt_bound == .exact or (tt_bound == .lower and tt_score >= beta) or (tt_bound == .upper and tt_score <= alpha))
                     return tt_score;
             }
@@ -564,7 +573,7 @@ pub const Searcher = struct {
         const imp: i32 = @intFromBool(improving);
         self.killers[ply + 1] = .{ Move.none, Move.none };
 
-        if (!pv_node and !in_check) {
+        if (!pv_node and !in_check and !verifying) {
             // Reverse futility pruning.
             if (depth <= 8 and eval < MATE_BOUND and eval - 80 * (depth - imp) >= beta)
                 return @divTrunc(eval + beta, 2);
@@ -605,6 +614,7 @@ pub const Searcher = struct {
         for (0..sm.list.len) |i| {
             const m = sm.pick(i);
             if (root and self.n_excluded > 0 and self.isExcluded(m)) continue;
+            if (verifying and m.eql(excluded)) continue;
             const quiet = !m.isNoisy();
 
             if (!root and best_score > -MATE_BOUND and has_material) {
@@ -621,9 +631,30 @@ pub const Searcher = struct {
                 }
             }
 
+            // Singular extension: if every other move fails well below the TT
+            // score, the TT move is the only good one and gets searched deeper.
+            var ext: i32 = 0;
+            if (!root and !verifying and depth >= 8 and m.eql(tt_move) and tt_bound != .upper and
+                tt_depth >= depth - 3 and @abs(tt_score) < MATE_BOUND and pi < 2 * self.root_depth)
+            {
+                const s_beta = tt_score - 2 * depth;
+                self.singular[ply] = m;
+                const s = self.negamax(pos, s_beta - 1, s_beta, @divTrunc(depth - 1, 2), ply, false, cut_node);
+                self.singular[ply] = Move.none;
+                if (self.stopped) return 0;
+                if (s < s_beta) {
+                    ext = if (!pv_node and s < s_beta - 20) 2 else 1;
+                } else if (s_beta >= beta) {
+                    // Multi-cut: another move also beats beta.
+                    return s_beta;
+                } else if (tt_score >= beta) {
+                    ext = -1;
+                }
+            }
+
             const child = self.makeMove(pos, m, ply);
             const gives_check = child.inCheck();
-            const ext: i32 = if (gives_check and pi < 2 * self.root_depth) 1 else 0;
+            if (ext == 0 and gives_check and pi < 2 * self.root_depth) ext = 1;
             const new_depth = depth - 1 + ext;
             var score: i32 = undefined;
 
@@ -684,8 +715,9 @@ pub const Searcher = struct {
         }
 
         const bound: tt_mod.Bound = if (best_score >= beta) .lower else if (best_move.data != 0) .exact else .upper;
-        // With root moves excluded (MultiPV) this isn't the root's true value.
-        if (!(root and self.n_excluded > 0))
+        // With root moves excluded (MultiPV) or a move skipped for a singular
+        // verification this isn't the node's true value.
+        if (!(root and self.n_excluded > 0) and !verifying)
             self.tt.store(pos.key, best_move, scoreToTT(best_score, ply), if (in_check) EVAL_NONE else static_eval, depth, bound);
         return best_score;
     }
