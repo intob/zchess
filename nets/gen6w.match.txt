@@ -1,0 +1,7 @@
+sprt: gen6w-vs-best (bins/gen6w/bin/zchess) vs base (bins/best/bin/zchess), tc=8+0.08, SPRT [0, 5], concurrency 10 -> sprt/20261008-0941-gen6w-vs-best
+Results of gen6w-vs-best vs base (8+0.08, 1t, 16MB, openings.epd):
+Elo: 26.72 +/- 10.27, nElo: 41.10 +/- 15.72
+Games: 1876, Wins: 493, Losses: 349, Draws: 1034, Points: 1010.0 (53.84 %)
+Ptnml(0-2): [33, 171, 417, 253, 64], WL/DD Ratio: 0.37
+LLR: 2.95 (100.2%) (-2.94, 2.94) [0.00, 5.00]
+SPRT ([0.00, 5.00]) completed - H1 was accepted

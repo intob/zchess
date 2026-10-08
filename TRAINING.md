@@ -149,6 +149,24 @@ Overnight results (bitch-box):
 - Running: **h512-all vs gen5, 8+0.08, SPRT [0,10]** (`~/zchess-overnight/run-512-vs-gen5.sh`),
   the promotion decision for the 512-wide net.
 
+### 2026-10-08: gen6w (512-wide, recent data only) promoted
+- h512-all became `nets/gen5w.nnue`, the first 512-wide best net.
+- `scripts/gen6w.sh`: collected gen6 from the cluster, restarted cluster datagen
+  as `gen7book` (with gen5w), trained a 512-wide net on a window of recent data
+  only (gen4, gen5book, gen5rand, gen6book; val loss 0.00304), SPRT vs gen5w.
+- **gen6w vs gen5w, 8+0.08: +27 ± 10, SPRT H1** at 1876 games (+493 =1034 −349).
+  Dropping the early generations helps, as the h256-all result suggested.
+  `nets/best.txt` = gen6w.
+- Next: collect gen7 (`scripts/cluster.sh collect 7book`), train gen7w on
+  gen5–7 the same way; gauntlet gen6w on bitch-box to place it vs gen5 (~3045).
+
+### Strength limit calibration (2026-10-08, bitch-box)
+zchess at UCI_Elo X vs Stockfish 19 at the same X, 10+0.1, 100 games per level.
+First mapping: 1400 scored 82.5%, 2000 95.5% (2600 lost on time: the limiter
+ignored the clock, fixed). With the calibration table in `src/strength.zig`:
+1400 −7 ± 65, 2000 +31 ± 63, 2600 +131 ± 65, so a fourth point (requested 2730
+→ internal 2150) was added for the top end. Not yet re-measured; done with gen5w.
+
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
 can't compare a 512 net with a 256 net: build per size and SPRT the two binaries

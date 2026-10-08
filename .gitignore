@@ -21,3 +21,4 @@ h512.log
 zig-out-x86-gauntlet/
 remote-gauntlet*.log
 gen6w.log
+zig-out-x86-cal/
