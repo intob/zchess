@@ -29,6 +29,11 @@ pub const Engine = struct {
     net: ?*nnue.Network = null,
     use_nnue: bool = true,
     multipv: usize = 1,
+    /// Safety margin (ms) kept off the clock for GUI and network delay.
+    move_overhead: i64 = 30,
+    pondering: std.atomic.Value(bool) = .init(false),
+    /// Set only by the `stop` command (the search also sets `stop` itself).
+    stop_cmd: std.atomic.Value(bool) = .init(false),
     stop: std.atomic.Value(bool) = .init(false),
     searchers: std.ArrayList(*search.Searcher) = .empty,
     search_thread: ?std.Thread = null,
@@ -52,6 +57,7 @@ pub const Engine = struct {
         for (e.searchers.items) |s| s.peers = e.searchers.items;
         e.searchers.items[0].out = e.out;
         e.searchers.items[0].multipv = e.multipv;
+        e.searchers.items[0].pondering = &e.pondering;
     }
 
     fn waitSearch(e: *Engine) void {
@@ -76,10 +82,21 @@ pub const Engine = struct {
         }
         main.setPosition(&e.pos, e.game_keys.items);
         const r = main.search(limits);
+        // UCI: no bestmove while pondering until ponderhit or stop.
+        while (e.pondering.load(.monotonic) and !e.stop_cmd.load(.monotonic)) {
+            e.io.sleep(.fromMilliseconds(2), .awake) catch {};
+        }
         e.stop.store(true, .monotonic);
         for (helpers[0 .. e.searchers.items.len - 1]) |h| if (h) |t| t.join();
         var buf: [5]u8 = undefined;
-        e.out.print("bestmove {s}\n", .{r.move.toUci(&buf)});
+        var pbuf: [5]u8 = undefined;
+        // Expected reply, so the GUI can ponder on it during the opponent's time.
+        const line = if (main.n_lines > 0) &main.lines[0] else null;
+        if (line != null and line.?.move.eql(r.move) and line.?.pv_len >= 2) {
+            e.out.print("bestmove {s} ponder {s}\n", .{ r.move.toUci(&buf), line.?.pv[1].toUci(&pbuf) });
+        } else {
+            e.out.print("bestmove {s}\n", .{r.move.toUci(&buf)});
+        }
     }
 
     fn helperMain(s: *search.Searcher, limits: search.Limits) void {
@@ -133,6 +150,7 @@ pub const Engine = struct {
         var binc: i64 = 0;
         var movestogo: i64 = 0;
         var movetime: i64 = 0;
+        var ponder = false;
         var it = std.mem.tokenizeScalar(u8, args, ' ');
         while (it.next()) |tok| {
             const v: i64 = if (it.peek()) |p| std.fmt.parseInt(i64, p, 10) catch 0 else 0;
@@ -150,6 +168,8 @@ pub const Engine = struct {
                 movetime = v;
             } else if (std.mem.eql(u8, tok, "depth")) {
                 limits.depth = @intCast(std.math.clamp(v, 1, search.MAX_PLY - 1));
+            } else if (std.mem.eql(u8, tok, "ponder")) {
+                ponder = true;
             } else if (std.mem.eql(u8, tok, "nodes")) {
                 limits.nodes = @intCast(@max(v, 1));
             }
@@ -158,10 +178,9 @@ pub const Engine = struct {
         const time = if (e.pos.side == bb.WHITE) wtime else btime;
         const inc = if (e.pos.side == bb.WHITE) winc else binc;
         if (movetime > 0) {
-            limits.hard_ms = @max(movetime - 10, 1);
+            limits.hard_ms = @max(movetime - e.move_overhead, 1);
         } else if (time >= 0) {
-            const overhead = 30;
-            const left = @max(time - overhead, 1);
+            const left = @max(time - e.move_overhead, 1);
             const mtg: i64 = if (movestogo > 0) @min(movestogo, 40) else 30;
             const base = @divTrunc(left, mtg) + @divTrunc(inc * 3, 4);
             limits.soft_ms = @max(@min(base, @divTrunc(left, 2)), 1);
@@ -170,6 +189,8 @@ pub const Engine = struct {
 
         e.waitSearch();
         e.stop.store(false, .monotonic);
+        e.stop_cmd.store(false, .monotonic);
+        e.pondering.store(ponder, .monotonic);
         e.search_thread = std.Thread.spawn(.{}, think, .{ e, limits }) catch {
             e.out.print("info string failed to start search\n", .{});
             return;
@@ -200,6 +221,13 @@ pub const Engine = struct {
             e.use_nnue = true;
             try e.setThreads(e.searchers.items.len);
             e.out.print("info string loaded network {s}\n", .{value});
+        } else if (std.ascii.eqlIgnoreCase(name, "Move Overhead")) {
+            e.move_overhead = std.math.clamp(std.fmt.parseInt(i64, value, 10) catch 30, 0, 5000);
+        } else if (std.ascii.eqlIgnoreCase(name, "Clear Hash")) {
+            e.tt.clear();
+            for (e.searchers.items) |sr| sr.clearHistory();
+        } else if (std.ascii.eqlIgnoreCase(name, "Ponder")) {
+            // Nothing to configure: the GUI decides when to send `go ponder`.
         } else if (std.ascii.eqlIgnoreCase(name, "MultiPV")) {
             e.multipv = std.math.clamp(std.fmt.parseInt(usize, value, 10) catch 1, 1, search.MAX_MULTIPV);
             e.searchers.items[0].multipv = e.multipv;
@@ -233,6 +261,9 @@ pub const Engine = struct {
             e.out.print("option name EvalFile type string default <embedded>\n", .{});
             e.out.print("option name UseNNUE type check default true\n", .{});
             e.out.print("option name MultiPV type spin default 1 min 1 max {d}\n", .{search.MAX_MULTIPV});
+            e.out.print("option name Ponder type check default false\n", .{});
+            e.out.print("option name Move Overhead type spin default 30 min 0 max 5000\n", .{});
+            e.out.print("option name Clear Hash type button\n", .{});
             e.out.print("uciok\n", .{});
         } else if (std.mem.eql(u8, cmd, "isready")) {
             e.out.print("readyok\n", .{});
@@ -246,8 +277,11 @@ pub const Engine = struct {
         } else if (std.mem.eql(u8, cmd, "go")) {
             e.goCmd(args);
         } else if (std.mem.eql(u8, cmd, "stop")) {
+            e.stop_cmd.store(true, .monotonic);
             e.stop.store(true, .monotonic);
             e.waitSearch();
+        } else if (std.mem.eql(u8, cmd, "ponderhit")) {
+            e.searchers.items[0].ponderhit();
         } else if (std.mem.eql(u8, cmd, "setoption")) {
             e.waitSearch();
             try e.setOption(args);

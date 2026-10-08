@@ -197,6 +197,10 @@ pub const Searcher = struct {
     limits: Limits = .{},
     start: Io.Timestamp = undefined,
     stopped: bool = false,
+    /// Set by the UCI layer while pondering: time limits are ignored until
+    /// ponderhit, after which they count from `clock_offset_ms`.
+    pondering: ?*std.atomic.Value(bool) = null,
+    clock_offset_ms: std.atomic.Value(i64) = .init(0),
     root_depth: i32 = 0,
     root_best: Move = Move.none,
     /// Number of lines to search and report (UCI MultiPV); 1 = normal search.
@@ -246,6 +250,22 @@ pub const Searcher = struct {
         return self.start.durationTo(Io.Clock.awake.now(self.io)).toMilliseconds();
     }
 
+    inline fn isPondering(self: *const Searcher) bool {
+        return if (self.pondering) |p| p.load(.monotonic) else false;
+    }
+
+    /// Time counted against the limits: everything since the search started,
+    /// minus any time spent pondering before ponderhit.
+    inline fn limitElapsedMs(self: *const Searcher) i64 {
+        return self.elapsedMs() - self.clock_offset_ms.load(.monotonic);
+    }
+
+    /// Called from the UCI thread on ponderhit: the clock starts now.
+    pub fn ponderhit(self: *Searcher) void {
+        self.clock_offset_ms.store(self.elapsedMs(), .monotonic);
+        if (self.pondering) |p| p.store(false, .monotonic);
+    }
+
     fn totalNodes(self: *const Searcher) u64 {
         if (self.peers.len == 0) return self.nodes;
         var n: u64 = 0;
@@ -260,7 +280,7 @@ pub const Searcher = struct {
             self.shared_nodes.store(self.nodes, .monotonic);
             if (self.stop.load(.monotonic)) self.stopped = true;
             if (self.limits.nodes != 0 and self.nodes >= self.limits.nodes) self.stopped = true;
-            if (self.limits.hard_ms != 0 and self.elapsedMs() >= self.limits.hard_ms) self.stopped = true;
+            if (self.limits.hard_ms != 0 and !self.isPondering() and self.limitElapsedMs() >= self.limits.hard_ms) self.stopped = true;
             if (self.stopped and self.out != null) self.stop.store(true, .monotonic);
         }
         return self.stopped;
@@ -333,6 +353,7 @@ pub const Searcher = struct {
         self.nodes = 0;
         self.shared_nodes.store(0, .monotonic);
         self.stopped = false;
+        self.clock_offset_ms.store(0, .monotonic);
         self.root_best = Move.none;
         for (&self.killers) |*k| k.* = .{ Move.none, Move.none };
         self.was_null[0] = false;
@@ -385,8 +406,9 @@ pub const Searcher = struct {
             best = .{ .move = lines[0].move, .score = lines[0].score, .depth = depth };
             self.shared_nodes.store(self.nodes, .monotonic);
             if (self.out) |o| self.report(o, depth);
+            if (self.isPondering()) continue;
             if (limits.soft_nodes != 0 and self.nodes >= limits.soft_nodes) break;
-            if (limits.soft_ms != 0 and self.elapsedMs() >= limits.soft_ms) break;
+            if (limits.soft_ms != 0 and self.limitElapsedMs() >= limits.soft_ms) break;
         }
         self.n_excluded = 0;
         self.shared_nodes.store(self.nodes, .monotonic);
