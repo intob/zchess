@@ -24,6 +24,8 @@ pub const MATE: i32 = 32000;
 pub const MATE_BOUND: i32 = MATE - MAX_PLY;
 const EVAL_NONE: i32 = -32002;
 const MAX_KEYS = 512;
+/// Continuation-history index (piece * 64 + to) of a null move or no move.
+const NO_CONT: u16 = 0xFFFF;
 
 pub const Limits = struct {
     depth: i32 = MAX_PLY - 1,
@@ -217,6 +219,12 @@ pub const Searcher = struct {
     key_len: usize = 0,
 
     history: [2][64][64]i32 = std.mem.zeroes([2][64][64]i32),
+    /// Continuation history: [earlier move][this move], each as piece * 64 + to,
+    /// for the moves one and two plies back. Zeroed in create (too big for a
+    /// comptime default).
+    cont_hist: [12 * 64][12 * 64]i16 = undefined,
+    /// Continuation index of the move played at each ply.
+    moved: [MAX_PLY + 2]u16 = undefined,
     killers: [MAX_PLY + 2][2]Move = undefined,
     evals: [MAX_PLY + 2]i32 = undefined,
     was_null: [MAX_PLY + 2]bool = undefined,
@@ -228,11 +236,40 @@ pub const Searcher = struct {
         initLmr();
         const s = try gpa.create(Searcher);
         s.* = .{ .tt = tt, .net = net, .stop = stop, .io = io };
+        s.clearHistory();
         return s;
     }
 
     pub fn clearHistory(self: *Searcher) void {
         self.history = std.mem.zeroes([2][64][64]i32);
+        @memset(std.mem.sliceAsBytes(&self.cont_hist), 0);
+    }
+
+    inline fn contIndex(pos: *const Position, m: Move) u16 {
+        return @as(u16, pos.board[m.from()]) * 64 + m.to();
+    }
+
+    /// Continuation-history entry of `m` after the move `back` plies before `ply`.
+    inline fn contEntry(self: *Searcher, ply: usize, back: usize, idx: u16) ?*i16 {
+        if (ply < back) return null;
+        const prev = self.moved[ply - back];
+        return if (prev == NO_CONT) null else &self.cont_hist[prev][idx];
+    }
+
+    /// Main plus continuation history of a quiet move.
+    inline fn quietHistory(self: *Searcher, pos: *const Position, m: Move, ply: usize) i32 {
+        const idx = contIndex(pos, m);
+        var h = self.history[pos.side][m.from()][m.to()];
+        if (self.contEntry(ply, 1, idx)) |e| h += e.*;
+        if (self.contEntry(ply, 2, idx)) |e| h += e.*;
+        return h;
+    }
+
+    fn updateQuietHistory(self: *Searcher, pos: *const Position, m: Move, ply: usize, bonus: i32) void {
+        updateHistory(&self.history[pos.side][m.from()][m.to()], bonus);
+        const idx = contIndex(pos, m);
+        if (self.contEntry(ply, 1, idx)) |e| updateHistory16(e, bonus);
+        if (self.contEntry(ply, 2, idx)) |e| updateHistory16(e, bonus);
     }
 
     /// Set the root position. `game_keys` are hashes of earlier positions in
@@ -296,6 +333,7 @@ pub const Searcher = struct {
     inline fn makeMove(self: *Searcher, pos: *const Position, m: Move, ply: usize) Position {
         const child = pos.makeMove(m);
         self.tt.prefetch(child.key);
+        self.moved[ply] = contIndex(pos, m);
         if (self.net) |n| nnue.update(n, &self.acc[ply], &self.acc[ply + 1], &child.dirty);
         self.keys[self.key_len] = child.key;
         self.key_len += 1;
@@ -318,7 +356,7 @@ pub const Searcher = struct {
         return false;
     }
 
-    fn scoreMoves(self: *const Searcher, pos: *const Position, sm: *ScoredMoves, tt_move: Move, ply: usize) void {
+    fn scoreMoves(self: *Searcher, pos: *const Position, sm: *ScoredMoves, tt_move: Move, ply: usize) void {
         const killers = self.killers[ply];
         for (sm.list.slice(), 0..) |m, i| {
             var s: i32 = 0;
@@ -337,7 +375,7 @@ pub const Searcher = struct {
             } else if (m.eql(killers[1])) {
                 s = 800_000;
             } else {
-                s = self.history[pos.side][m.from()][m.to()];
+                s = self.quietHistory(pos, m, ply);
             }
             sm.scores[i] = s;
         }
@@ -345,6 +383,12 @@ pub const Searcher = struct {
 
     inline fn updateHistory(h: *i32, bonus: i32) void {
         h.* += bonus - @divTrunc(h.* * @as(i32, @intCast(@abs(bonus))), 16384);
+    }
+
+    inline fn updateHistory16(h: *i16, bonus: i32) void {
+        var v: i32 = h.*;
+        updateHistory(&v, bonus);
+        h.* = @intCast(v);
     }
 
     pub fn search(self: *Searcher, limits: Limits) Result {
@@ -535,6 +579,7 @@ pub const Searcher = struct {
                 self.keys[self.key_len] = child.key;
                 self.key_len += 1;
                 self.was_null[ply + 1] = true;
+                self.moved[ply] = NO_CONT;
                 const s = -self.negamax(&child, -beta, -beta + 1, depth - r, ply + 1, false, !cut_node);
                 self.unmake();
                 if (self.stopped) return 0;
@@ -592,7 +637,7 @@ pub const Searcher = struct {
                     r += @intFromBool(cut_node);
                     r -= imp;
                     r -= @intFromBool(gives_check);
-                    r -= @divTrunc(self.history[pos.side][m.from()][m.to()], 8192);
+                    r -= @divTrunc(self.quietHistory(pos, m, ply), 16384);
                     r = std.math.clamp(r, 0, new_depth - 1);
                 }
                 score = -self.negamax(&child, -alpha - 1, -alpha, new_depth - r, ply + 1, false, true);
@@ -625,8 +670,8 @@ pub const Searcher = struct {
                                 k[0] = m;
                             }
                             const bonus = @min(16 * depth * depth + 32 * depth, 1500);
-                            updateHistory(&self.history[pos.side][m.from()][m.to()], bonus);
-                            for (quiets[0..n_quiets]) |q| updateHistory(&self.history[pos.side][q.from()][q.to()], -bonus);
+                            self.updateQuietHistory(pos, m, ply, bonus);
+                            for (quiets[0..n_quiets]) |q| self.updateQuietHistory(pos, q, ply, -bonus);
                         }
                         break;
                     }
