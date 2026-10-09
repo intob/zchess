@@ -165,7 +165,13 @@ zchess at UCI_Elo X vs Stockfish 19 at the same X, 10+0.1, 100 games per level.
 First mapping: 1400 scored 82.5%, 2000 95.5% (2600 lost on time: the limiter
 ignored the clock, fixed). With the calibration table in `src/strength.zig`:
 1400 −7 ± 65, 2000 +31 ± 63, 2600 +131 ± 65, so a fourth point (requested 2730
-→ internal 2150) was added for the top end. Not yet re-measured; done with gen5w.
+→ internal 2150) was added for the top end. Done with gen5w.
+
+Re-measured with gen6w + continuation history (`scripts/remote-calibrate.sh`, 300 games
+per level): 1400 **+7 ± 39**, 2000 **−19 ± 38**, 2600 **+127 ± 39**. The stronger engine
+plays above the old top points, so the table now uses these measurements directly:
+internal 1211 → 1407, 1630 → 1981, 2052 → 2727. A 100-game run just before gave
+1400 +111, 2000 −60, 2600 +104: 100 games per level is too noisy for this.
 
 ### Search improvements (2026-10-08, Mac)
 Each one SPRT'd binary vs binary (`scripts/sprt.sh`, 8+0.08, [0, 5]) against the
@@ -175,7 +181,9 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
 - [x] Continuation history (piece×to of the moves 1 and 2 plies back; in quiet
   ordering and the LMR history term): **+25.7 ± 9.7, H1** at 1790 games
   (+419 =1084 −287). Merged.
-- [ ] Correction history (pawn structure, per side to move), vs conthist: running.
+- [x] Correction history (pawn structure, per side to move), vs conthist:
+  **−0.8 ± 5.2** after 8402 games (+2202 =3978 −2222, LLR −1.28), stopped. No gain;
+  left on the `search/corrhist` branch. (The Mac slept overnight, so this took a day.)
 - [ ] Singular extensions (with multi-cut and negative extensions).
 
 ### Step 3: bigger net (trained; width confirmed, promotion test running)

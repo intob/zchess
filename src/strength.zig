@@ -20,15 +20,16 @@ pub const Params = struct {
 };
 
 /// Calibration: requested rating -> internal setting, from matches against
-/// Stockfish 19's limiter (2026-10-08: internal 1400 played like ~1670,
-/// internal 2000 like ~2530 and internal ~2150 like ~2730; a check of the
-/// table gave 1400 -7±65, 2000 +31±63). Linear between points; below 1670
-/// extrapolated.
+/// Stockfish 19's limiter at 10+0.1 (2026-10-08, gen6w with continuation
+/// history, 300 games per point: internal 1211 played like ~1407, internal
+/// 1630 like ~1981 and internal 2052 like ~2727, each ±39). Linear between
+/// points; below 1407 extrapolated. Stronger nets or search shift the table:
+/// re-measure with scripts/remote-calibrate.sh after a promotion.
 const calibration = [_][2]f64{
     .{ 100, 300 },
-    .{ 1670, 1400 },
-    .{ 2530, 2000 },
-    .{ 2730, 2150 },
+    .{ 1407, 1211 },
+    .{ 1981, 1630 },
+    .{ 2727, 2052 },
     .{ 3000, 3000 },
 };
 
