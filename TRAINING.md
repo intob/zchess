@@ -184,7 +184,10 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
 - [x] Correction history (pawn structure, per side to move), vs conthist:
   **−0.8 ± 5.2** after 8402 games (+2202 =3978 −2222, LLR −1.28), stopped. No gain;
   left on the `search/corrhist` branch. (The Mac slept overnight, so this took a day.)
-- [ ] Singular extensions (with multi-cut and negative extensions).
+- [x] Singular extensions (with multi-cut and negative extensions; depth ≥ 8, margin
+  2×depth, double extension below margin −20 off the PV), vs conthist, SPRT'd on
+  bitch-box: **+36.6 ± 12.0, H1** at 1372 games (+391 =734 −247).
+  Merged 2026-10-12.
 
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
