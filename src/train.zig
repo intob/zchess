@@ -319,15 +319,27 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         out.print("not enough data: {d} positions\n", .{total});
         return error.NotEnoughData;
     }
-    const data = try gpa.alloc(Record, total);
-    defer gpa.free(data);
+    // Mapped directly rather than through gpa: Zig 0.16's PageAllocator hints
+    // each mapping just below the previous one, and for a buffer larger than
+    // that address (> 4 GiB on macOS) the hint wraps and mmap fails.
+    const mapped = try std.posix.mmap(null, total * @sizeOf(Record), .{ .READ = true, .WRITE = true }, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
+    defer std.posix.munmap(mapped);
+    const data = std.mem.bytesAsSlice(Record, mapped);
     var filled: usize = 0;
     for (paths.items) |path| {
         const f = try Io.Dir.cwd().openFile(io, path, .{});
         defer f.close(io);
         const n = (try f.length(io)) / @sizeOf(Record);
-        const got = try f.readPositionalAll(io, std.mem.sliceAsBytes(data[filled..][0..n]), 0);
-        filled += got / @sizeOf(Record);
+        // In chunks: macOS rejects a single read of 2 GiB or more.
+        const bytes = std.mem.sliceAsBytes(data[filled..][0..n]);
+        var off: usize = 0;
+        while (off < bytes.len) {
+            const want = @min(bytes.len - off, 1 << 30);
+            const got = try f.readPositionalAll(io, bytes[off..][0..want], off);
+            off += got;
+            if (got < want) break;
+        }
+        filled += off / @sizeOf(Record);
         out.print("loaded {d} positions from {s}\n", .{ n, path });
     }
 
