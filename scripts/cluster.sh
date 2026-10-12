@@ -17,7 +17,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+SSH="ssh $SSH_OPTS"
+# Same options for scp, so a host dropping off mid-transfer fails instead of hanging.
+SCP="scp -q $SSH_OPTS"
 REMOTE=zchess
 PREFIX_ARM=zig-out-pi   # Raspberry Pi 5 (Cortex-A76)
 PREFIX_X86=zig-out-x86  # x86-64 cloud VMs (AVX2 baseline)
@@ -62,10 +65,10 @@ deploy() {
             x86_64) prefix=$PREFIX_X86 ;;
             *) echo "cluster: $h has unsupported arch $arch, skipping"; continue ;;
         esac
-        scp -q "$prefix/bin/zchess" "$h:$REMOTE/zchess.new"
-        scp -q scripts/pi-thermal-guard.sh "$h:$REMOTE/pi-thermal-guard.sh.new"
-        scp -q scripts/run-datagen.sh "$h:$REMOTE/run-datagen.sh.new"
-        [ "$net" != hce ] && scp -q "$net" "$h:$REMOTE/"
+        $SCP "$prefix/bin/zchess" "$h:$REMOTE/zchess.new"
+        $SCP scripts/pi-thermal-guard.sh "$h:$REMOTE/pi-thermal-guard.sh.new"
+        $SCP scripts/run-datagen.sh "$h:$REMOTE/run-datagen.sh.new"
+        [ "$net" != hce ] && $SCP "$net" "$h:$REMOTE/"
         $SSH "$h" "cd $REMOTE && mv zchess.new zchess && mv pi-thermal-guard.sh.new pi-thermal-guard.sh && mv run-datagen.sh.new run-datagen.sh && chmod +x zchess pi-thermal-guard.sh run-datagen.sh"
         echo "cluster: deployed to $h ($arch)"
     done
@@ -96,7 +99,7 @@ start() {
         sum=$(shasum -a 256 "$book" | cut -d' ' -f1)
         for h in $idle; do
             if [ "$($SSH "$h" "sha256sum $REMOTE/$(basename "$book") 2>/dev/null | cut -d' ' -f1")" != "$sum" ]; then
-                scp -q "$book" "$h:$REMOTE/" 2>/dev/null || true
+                $SCP "$book" "$h:$REMOTE/" 2>/dev/null || true
             fi
         done
         book_opt="--book $(basename "$book")"
@@ -163,13 +166,20 @@ collect() {
     for h in $(hosts); do
         local remote_file=$REMOTE/data/gen$gen.bin
         local size
-        size=$($SSH "$h" "stat -c %s $remote_file 2>/dev/null || echo 0" 2>/dev/null || echo 0)
+        if ! size=$($SSH "$h" "stat -c %s $remote_file 2>/dev/null || echo 0" 2>/dev/null); then
+            echo "cluster: $h unreachable, any gen$gen data stays on it"
+            continue
+        fi
         if [ "$size" -lt "$RECORD" ]; then
             echo "cluster: $h has no gen$gen data"
             continue
         fi
         local part=data/cluster/gen$gen-$h.bin
-        scp -q "$h:$remote_file" "$part"
+        if ! $SCP "$h:$remote_file" "$part"; then
+            echo "cluster: $h transfer failed, leaving it on the Pi"
+            rm -f "$part"
+            continue
+        fi
         local got
         got=$(stat -f %z "$part")
         if [ "$got" != "$size" ]; then
