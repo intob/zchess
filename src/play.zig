@@ -12,16 +12,19 @@ const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
 const strength = @import("strength.zig");
 const coach = @import("coach.zig");
+const openings = @import("openings.zig");
 
 const Position = position.Position;
 const Move = position.Move;
 
 const help =
-    \\usage: zchess play [--black] [--time <seconds>] [--elo <100-3000>] [--net <file|hce>] [--fen <fen>] [--coach]
+    \\usage: zchess play [--black] [--time <seconds>] [--elo <100-3000>] [--net <file|hce>] [--fen <fen>]
+    \\                   [--coach [--games <pgn file or dir> [--user <name>]]]
     \\
     \\Enter moves as SAN (e4, Nf3, exd5, O-O, e8=Q) or coordinates (e2e4).
     \\Commands: moves, undo, flip, hint, help, quit
-    \\--coach: a comment on each of your moves, judged as `zchess review` would.
+    \\--coach: a comment on each of your moves, judged as `zchess review` would, with
+    \\opening names and theory; --games adds your record from your own games.
     \\
 ;
 
@@ -153,6 +156,8 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var net_path: []const u8 = "";
     var fen: []const u8 = position.START_FEN;
     var coaching = false;
+    var games_path: []const u8 = "";
+    var user: []const u8 = "";
     while (p.next()) |a| {
         if (std.mem.eql(u8, a, "--black")) human = bb.BLACK
         else if (std.mem.eql(u8, a, "--white")) human = bb.WHITE
@@ -161,6 +166,8 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         else if (p.flag(a, "--net")) |v| net_path = v
         else if (p.flag(a, "--fen")) |v| fen = v
         else if (std.mem.eql(u8, a, "--coach")) coaching = true
+        else if (p.flag(a, "--games")) |v| games_path = v
+        else if (p.flag(a, "--user")) |v| user = v
         else {
             out.print("{s}", .{help});
             return;
@@ -186,6 +193,19 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         out.print("invalid fen\n", .{});
         return;
     };
+    var coach_ctx = coach.Context{ .book = openings.Book.embeddedBook() };
+    var rep: ?openings.Repertoire = null;
+    defer if (rep) |*r| r.deinit();
+    if (coaching and games_path.len > 0) {
+        rep = openings.Repertoire.load(gpa, io, games_path, user) catch |err| blk: {
+            out.print("can't read games from {s}: {s}\n", .{ games_path, @errorName(err) });
+            break :blk null;
+        };
+        if (rep) |*r| {
+            coach_ctx.rep = r;
+            out.print("coach: {d} of your games as {s}\n", .{ r.games, r.user() });
+        }
+    }
     var white_bottom = human == bb.WHITE;
     var last = Move.none;
 
@@ -278,9 +298,9 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         try keys.append(gpa, pos.key);
         try moves.append(gpa, move);
         if (coaching and pos.side == human) {
-            var cb: [1024]u8 = undefined;
+            var cb: [2048]u8 = undefined;
             var w: Io.Writer = .fixed(&cb);
-            coach.comment(engine, &pos, move, keys.items, &w) catch {};
+            coach.comment(engine, &coach_ctx, &pos, move, keys.items, &w) catch {};
             out.print("coach: {s}\n", .{w.buffered()});
         }
         pos = pos.makeMove(move);

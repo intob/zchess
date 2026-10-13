@@ -1,7 +1,10 @@
 //! Live coaching for UCI play: while the engine thinks, judges the
 //! opponent's (the user's) last move the way `review` does, and writes a
 //! one-line comment: how much it cost in winning chances, what went wrong in
-//! plain language, and the better move with its line.
+//! plain language, and the better move with its line. In the opening it also
+//! names the opening, says whether the move is theory (from strong players'
+//! games), gives an opening-principle tip for weak moves, and how the user
+//! has done from here in their own games (see openings.zig).
 
 const std = @import("std");
 const Io = std.Io;
@@ -10,6 +13,7 @@ const position = @import("position.zig");
 const search = @import("search.zig");
 const review = @import("review.zig");
 const play = @import("play.zig");
+const openings = @import("openings.zig");
 
 const Position = position.Position;
 const Move = position.Move;
@@ -20,9 +24,28 @@ pub const NODES = 300_000;
 /// Moves of a line to show.
 const LINE_LEN = 4;
 
+/// Games through a position for its moves to count as theory.
+const MIN_THEORY = 20;
+/// Share of those games (percent) below which a move is a rare sideline.
+const MIN_BOOK_PCT = 2;
+/// Principle tips only in the first moves.
+const TIP_MOVES = 12;
+
+/// Opening knowledge, and what the coach has already said this game.
+pub const Context = struct {
+    book: ?openings.Book = null,
+    rep: ?*const openings.Repertoire = null,
+    /// The opening name last announced (its index in the book).
+    named: ?u32 = null,
+
+    pub fn newGame(c: *Context) void {
+        c.named = null;
+    }
+};
+
 /// Comment on `move`, played in `before`. `keys` are the positions of the
 /// game up to and including `before` (for repetitions).
-pub fn comment(s: *search.Searcher, before: *const Position, move: Move, keys: []const u64, w: *Io.Writer) !void {
+pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move: Move, keys: []const u64, w: *Io.Writer) !void {
     const after = before.makeMove(move);
     const eb = review.evalPosition(s, before, keys[0 .. keys.len -| 1], NODES);
     const ea = review.evalPosition(s, &after, keys, NODES);
@@ -34,6 +57,7 @@ pub fn comment(s: *search.Searcher, before: *const Position, move: Move, keys: [
     const best = play.san(before, eb.best, &bsb);
     try w.print("{d}{s} {s}", .{ before.fullmove, if (before.side == bb.WHITE) "." else "...", played });
 
+    var label: review.Label = .{};
     if (g.cls == .good) {
         if (move.eql(eb.best)) {
             try w.writeAll(": best move.");
@@ -43,7 +67,7 @@ pub fn comment(s: *search.Searcher, before: *const Position, move: Move, keys: [
     } else {
         const positions = [2]Position{ before.*, after };
         const evals = [2]review.Eval{ eb, ea };
-        const label = review.classifyKind(&positions, &evals, &.{move}, 0);
+        label = review.classifyKind(&positions, &evals, &.{move}, 0);
         var xb: [128]u8 = undefined;
         try w.print("{s} {s}: {s} (win chance {d:.0}% -> {d:.0}%). Better was {s}", .{
             switch (g.cls) {
@@ -74,8 +98,114 @@ pub fn comment(s: *search.Searcher, before: *const Position, move: Move, keys: [
             try w.writeByte('.');
         }
     }
+    if (ctx.book) |*book| {
+        try writeOpeningName(w, book, ctx, after.key, keys);
+        try writeTheory(w, book, before, move);
+    }
+    // A principle only when the engine also dislikes the move, and nothing
+    // more concrete (a hung piece, a missed capture) explains it.
+    if (g.cls != .good and label.kind == .other) {
+        if (tip(before, move)) |t| try w.print(" Tip: {s}", .{t});
+    }
+    if (ctx.rep) |r| {
+        if (r.get(after.key)) |rec| if (rec.games >= 2) try w.print(" You've reached this position in {d} of your games: {d} won, {d} drawn, {d} lost.", .{
+            rec.games, rec.wins, rec.draws, rec.losses,
+        });
+    }
     try w.writeAll(" Eval: ");
     try writeScore(w, -ea.score);
+}
+
+/// The opening's name when it has changed since the last one announced: the
+/// latest named position of the game, so transpositions count.
+fn writeOpeningName(w: *Io.Writer, book: *const openings.Book, ctx: *Context, after: u64, keys: []const u64) !void {
+    const n = book.name(after) orelse blk: {
+        var i = keys.len;
+        while (i > 0) {
+            i -= 1;
+            if (book.name(keys[i])) |x| break :blk x;
+        }
+        return;
+    };
+    if (ctx.named == n.index) return;
+    ctx.named = n.index;
+    try w.print(" Opening: {s} ({s}).", .{ n.name, n.eco });
+}
+
+fn pct(n: u64, total: u64) u64 {
+    return (n * 100 + total / 2) / total;
+}
+
+/// Whether `move` is theory: how often 2000+ players chose it here, or what
+/// they play instead when it leaves the book.
+fn writeTheory(w: *Io.Writer, book: *const openings.Book, before: *const Position, move: Move) !void {
+    const ms = book.moves(before.key);
+    const total = ms.total();
+    if (total < MIN_THEORY) return;
+    var rank: ?usize = null;
+    var mine: u64 = 0;
+    for (0..ms.len()) |i| {
+        const e = ms.get(i);
+        if (e.move.eql(move)) {
+            rank = i;
+            mine = e.games();
+            break;
+        }
+    }
+    if (rank != null and pct(mine, total) >= MIN_BOOK_PCT) {
+        return w.print(" {s}: played in {d}% of {d} games between 2000+ players.", .{
+            if (rank.? == 0) "Main line" else "Book move", pct(mine, total), total,
+        });
+    }
+    if (rank != null) {
+        const p = pct(mine, total);
+        if (p == 0) {
+            try w.print(" A rare sideline (under 1% of {d} games between 2000+ players); they mostly play ", .{total});
+        } else {
+            try w.print(" A rare sideline ({d}% of {d} games between 2000+ players); they mostly play ", .{ p, total });
+        }
+    } else {
+        try w.writeAll(" This leaves opening theory; 2000+ players play ");
+    }
+    for (0..@min(ms.len(), 3)) |i| {
+        const e = ms.get(i);
+        if (i > 0 and pct(e.games(), total) < 5) break;
+        var b: [16]u8 = undefined;
+        if (i > 0) try w.writeAll(", ");
+        try w.print("{s} ({d}%)", .{ play.san(before, e.move, &b), pct(e.games(), total) });
+    }
+    try w.writeAll(" here.");
+}
+
+/// An opening principle the move goes against, if any.
+fn tip(before: *const Position, move: Move) ?[]const u8 {
+    if (before.fullmove > TIP_MOVES) return null;
+    const us = before.side;
+    const from = move.from();
+    const pt = bb.pieceType(before.board[from]);
+    // b, c, f and g files of the back rank: where knights and bishops start.
+    const home: u64 = if (us == bb.WHITE) 0x66 else 0x66 << 56;
+    const minors = before.piecesOf(us, bb.KNIGHT) | before.piecesOf(us, bb.BISHOP);
+    const undeveloped = bb.popcount(minors & home);
+    const king_home: bb.Square = if (us == bb.WHITE) 4 else 60;
+    const rights: u4 = if (us == bb.WHITE) position.WK | position.WQ else position.BK | position.BQ;
+    const can_castle = before.castling & rights != 0;
+
+    if (pt == bb.KING and !move.isCastle() and can_castle)
+        return "moving your king gives up castling, which would have kept it safe.";
+    if (move.isCapture()) return null;
+    if (pt == bb.QUEEN and undeveloped >= 2)
+        return "bringing the queen out early lets your opponent develop with tempo by attacking it; get your knights and bishops out first.";
+    if ((pt == bb.KNIGHT or pt == bb.BISHOP) and bb.bit(from) & home == 0 and undeveloped >= 2 and
+        !before.attackedBy(from, us ^ 1, before.occupied()))
+        return "moving the same piece twice in the opening costs time; develop another piece instead.";
+    if (pt == bb.PAWN and undeveloped >= 2 and (bb.fileOf(from) <= 1 or bb.fileOf(from) >= 6))
+        return "pawn moves on the wing don't help your development; fight for the centre and get your pieces out.";
+    if (undeveloped >= 3 and before.fullmove >= 6 and bb.bit(from) & minors & home == 0)
+        return "you still have most of your pieces at home; developing them is usually worth more than this.";
+    if (before.fullmove >= 8 and pt != bb.KING and can_castle and before.kingSq(us) == king_home)
+        return "your king is still in the centre; castling soon keeps it safe and connects your rooks.";
+    return null;
 }
 
 /// The first moves of `pv` from `start`, in SAN.

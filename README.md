@@ -31,7 +31,7 @@ UCI options: `Hash`, `Threads`, `EvalFile` (path to a `.nnue`), `UseNNUE`, `Mult
 `Ponder`, `Move Overhead`, `Clear Hash`, and `UCI_LimitStrength` + `UCI_Elo` (100–3000:
 smaller search, more candidate moves and a weighted random pick at lower ratings;
 `zchess play --elo N` does the same in the terminal).
-`Coach` + `CoachLog`: a comment on each of your moves (see Game review).
+`Coach`, `CoachLog`, `CoachGames`, `CoachUser`: a comment on each of your moves (see Game review).
 Extra commands in UCI mode: `d` (show the board), `eval`, `perft <depth>`.
 
 ## Training pipeline
@@ -135,6 +135,27 @@ with a header per game:
     2... Qh4?? Blunder: left your queen hanging (win chance 49% -> 2%). Better was Nc6 (Nc6 Nc3 Nf6 Bc4). The punishment: Nxh4 Nf6 Nc3 Bc5. Eval: -9.99
 
 `go infinite` (analysis) and ponder misses aren't commented on.
+
+In the opening the comment also names the opening when it changes (Lichess's
+[chess-openings](https://github.com/lichess-org/chess-openings) list, CC0, matched by
+position so transpositions count), says whether the move is theory (how often 2000+
+players chose it in the Lichess broadcast games, or what they play instead when it
+leaves the book), adds an opening-principle tip (early queen, same piece twice,
+undeveloped pieces, uncastled king) when the engine also flags the move, and how you
+have done from the position in your own games:
+
+    3. Bc4: good. Nc3 was also strong. Opening: Italian Game (C50). Book move: played in 30% of 49241 games between 2000+ players. Eval: +0.07
+
+Your games come from `CoachGames` (a PGN file or a folder of them; default
+`~/Documents/EnCroissant/zchess`, where `scripts/ec-sync.py` puts them, re-read every
+new game) as `CoachUser` (default: whoever plays in most of them). In the terminal:
+`zchess play --coach --games <pgn or folder> [--user <name>]`.
+
+The names and the move tree are one file built by `zchess openings` and embedded by
+`zig build` when `data/openings.bin` exists (`-Dopenings=<file>` for another):
+
+    zchess openings --names data/openings/a.tsv,...,data/openings/e.tsv \
+        --out data/openings.bin data/lichess/*.pgn.zst   # about a minute
 
 ## Formats
 

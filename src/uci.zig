@@ -13,6 +13,7 @@ const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
 const strength = @import("strength.zig");
 const coach = @import("coach.zig");
+const openings = @import("openings.zig");
 
 const Position = position.Position;
 const Move = position.Move;
@@ -52,8 +53,15 @@ pub const Engine = struct {
     coach_searcher: ?*search.Searcher = null,
     coach_stop: std.atomic.Value(bool) = .init(false),
     coach_thread: ?std.Thread = null,
-    coach_buf: [1024]u8 = undefined,
+    coach_buf: [2048]u8 = undefined,
     coach_len: usize = 0,
+    /// Opening book (embedded) and the user's record from CoachGames / CoachUser,
+    /// re-read for each new game so newly synced games count.
+    coach_ctx: coach.Context = .{},
+    coach_games: std.ArrayList(u8) = .empty,
+    coach_user: std.ArrayList(u8) = .empty,
+    coach_rep: ?*openings.Repertoire = null,
+    coach_rep_stale: bool = true,
     /// Set by `go` when this search should be followed by a comment.
     coach_pending: bool = false,
     coach_new_game: bool = true,
@@ -66,6 +74,9 @@ pub const Engine = struct {
         e.* = .{ .gpa = gpa, .io = io, .out = out, .pos = Position.startpos(), .tt = try TT.init(gpa, 64) };
         if (home) |h| try e.coach_log.print(gpa, "{s}/", .{h});
         try e.coach_log.appendSlice(gpa, "zchess-coach.log");
+        // Where scripts/ec-sync.py puts the user's reviewed games.
+        if (home) |h| try e.coach_games.print(gpa, "{s}/Documents/EnCroissant/zchess", .{h});
+        e.coach_ctx.book = openings.Book.embeddedBook();
         e.net = try nnue.loadEmbedded(gpa);
         e.prng = std.Random.DefaultPrng.init(@truncate(@as(u96, @bitCast(Io.Clock.real.now(io).toNanoseconds()))));
         try e.setThreads(1);
@@ -171,9 +182,30 @@ pub const Engine = struct {
     }
 
     fn coachMain(e: *Engine, s: *search.Searcher) void {
+        if (e.coach_rep_stale) e.loadRepertoire();
         var w: Io.Writer = .fixed(&e.coach_buf);
-        coach.comment(s, &e.prev_pos, e.last_move, e.game_keys.items, &w) catch return;
+        coach.comment(s, &e.coach_ctx, &e.prev_pos, e.last_move, e.game_keys.items, &w) catch return;
         e.coach_len = w.buffered().len;
+    }
+
+    fn loadRepertoire(e: *Engine) void {
+        e.coach_rep_stale = false;
+        if (e.coach_rep) |r| {
+            r.deinit();
+            e.gpa.destroy(r);
+        }
+        e.coach_rep = null;
+        e.coach_ctx.rep = null;
+        if (e.coach_games.items.len == 0) return;
+        const r = e.gpa.create(openings.Repertoire) catch return;
+        r.* = openings.Repertoire.load(e.gpa, e.io, e.coach_games.items, e.coach_user.items) catch |err| {
+            e.out.print("info string coach: can't read games from {s}: {s}\n", .{ e.coach_games.items, @errorName(err) });
+            e.gpa.destroy(r);
+            return;
+        };
+        e.coach_rep = r;
+        e.coach_ctx.rep = r;
+        e.out.print("info string coach: {d} of your games as {s} from {s}\n", .{ r.games, r.user(), e.coach_games.items });
     }
 
     /// Waits for the comment and sends it to the GUI and the log; dropped
@@ -359,6 +391,14 @@ pub const Engine = struct {
             e.searchers.items[0].multipv = e.multipv;
         } else if (std.ascii.eqlIgnoreCase(name, "Coach")) {
             e.coach_on = std.ascii.eqlIgnoreCase(value, "true");
+        } else if (std.ascii.eqlIgnoreCase(name, "CoachGames")) {
+            e.coach_games.clearRetainingCapacity();
+            if (!std.mem.eql(u8, value, "<none>")) try e.coach_games.appendSlice(e.gpa, value);
+            e.coach_rep_stale = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "CoachUser")) {
+            e.coach_user.clearRetainingCapacity();
+            if (!std.mem.eql(u8, value, "<auto>")) try e.coach_user.appendSlice(e.gpa, value);
+            e.coach_rep_stale = true;
         } else if (std.ascii.eqlIgnoreCase(name, "CoachLog")) {
             e.coach_log.clearRetainingCapacity();
             if (!std.mem.eql(u8, value, "<none>")) try e.coach_log.appendSlice(e.gpa, value);
@@ -400,6 +440,8 @@ pub const Engine = struct {
             e.out.print("option name UCI_Elo type spin default 1500 min {d} max {d}\n", .{ strength.MIN_ELO, strength.MAX_ELO });
             e.out.print("option name Coach type check default false\n", .{});
             e.out.print("option name CoachLog type string default {s}\n", .{if (e.coach_log.items.len > 0) e.coach_log.items else "<none>"});
+            e.out.print("option name CoachGames type string default {s}\n", .{if (e.coach_games.items.len > 0) e.coach_games.items else "<none>"});
+            e.out.print("option name CoachUser type string default <auto>\n", .{});
             e.out.print("uciok\n", .{});
         } else if (std.mem.eql(u8, cmd, "isready")) {
             e.out.print("readyok\n", .{});
@@ -410,6 +452,8 @@ pub const Engine = struct {
             if (e.coach_searcher) |c| c.clearHistory();
             e.coach_new_game = true;
             e.coach_last = 0;
+            e.coach_ctx.newGame();
+            e.coach_rep_stale = true;
         } else if (std.mem.eql(u8, cmd, "position")) {
             e.waitSearch();
             e.setPositionCmd(args);

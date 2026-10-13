@@ -11,8 +11,14 @@ pub fn build(b: *std.Build) void {
     // Network width; nets only load into a binary built with the same size.
     const hidden = b.option(u32, "hidden", "NNUE hidden layer size (default 256, multiple of 16)") orelse 256;
 
+    // Opening names and the strong players' move tree for the coach
+    // (zchess openings); embedded when the file exists.
+    const openings_path: ?[]const u8 = b.option([]const u8, "openings", "Opening book for the coach (default data/openings.bin if it exists)") orelse
+        if (fileExists(b, "data/openings.bin")) @as([]const u8, "data/openings.bin") else null;
+
     const options = b.addOptions();
     options.addOption(bool, "has_net", net_path != null);
+    options.addOption(bool, "has_openings", openings_path != null);
     options.addOption(u32, "hidden", hidden);
 
     const mod = b.createModule(.{
@@ -22,6 +28,7 @@ pub fn build(b: *std.Build) void {
     });
     mod.addOptions("build_options", options);
     if (net_path) |p| mod.addAnonymousImport("default_net", .{ .root_source_file = b.path(p) });
+    if (openings_path) |p| mod.addAnonymousImport("openings", .{ .root_source_file = b.path(p) });
 
     const exe = b.addExecutable(.{ .name = "zchess", .root_module = mod });
     b.installArtifact(exe);
@@ -63,6 +70,14 @@ pub fn build(b: *std.Build) void {
     });
     test_mod.addOptions("build_options", options);
     if (net_path) |p| test_mod.addAnonymousImport("default_net", .{ .root_source_file = b.path(p) });
+    if (openings_path) |p| test_mod.addAnonymousImport("openings", .{ .root_source_file = b.path(p) });
     const tests = b.addTest(.{ .root_module = test_mod });
     b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(tests).step);
+}
+
+fn fileExists(b: *std.Build, path: []const u8) bool {
+    const io = b.graph.io;
+    const f = b.build_root.handle.openFile(io, path, .{}) catch return false;
+    f.close(io);
+    return true;
 }
