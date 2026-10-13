@@ -122,10 +122,13 @@ which turns the mistakes into a puzzle database in En Croissant's own format
 ("<user> mistakes" in the Puzzles tab): *spot the threat* (your bad move is played,
 find the punishment) and *find the win* (find the capture or mate you missed).
 
-Live coaching while you play: set the UCI option `Coach` to true and, after each
-reply, zchess judges the move you just made the same way (300k nodes for the
-position before and after it, on the engine's time after `bestmove`, not its clock).
-The comment is sent as `info string coach: ...` and appended to `CoachLog`
+Live coaching while you play: set the UCI option `Coach` to true and, while it
+thinks about its reply, zchess judges the move you just made the same way (300k
+nodes for the position before and after it, on a thread of its own; the reply waits
+for it, so it costs the engine a few tenths of a second of its own clock, and it's
+skipped when the engine has under a second for the move). The comment is sent as
+`info string coach: ...` just before `bestmove` (so it shows in En Croissant's engine
+logs: search for "coach") and appended to `CoachLog`
 (default `~/zchess-coach.log`, `<none>` to turn the file off), one line per move
 with a header per game:
 

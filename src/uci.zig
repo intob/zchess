@@ -51,6 +51,9 @@ pub const Engine = struct {
     coach_log: std.ArrayList(u8) = .empty,
     coach_searcher: ?*search.Searcher = null,
     coach_stop: std.atomic.Value(bool) = .init(false),
+    coach_thread: ?std.Thread = null,
+    coach_buf: [1024]u8 = undefined,
+    coach_len: usize = 0,
     /// Set by `go` when this search should be followed by a comment.
     coach_pending: bool = false,
     coach_new_game: bool = true,
@@ -93,8 +96,8 @@ pub const Engine = struct {
     }
 
     fn think(e: *Engine, limits: search.Limits) void {
-        defer e.coachMove();
         e.tt.newSearch();
+        e.startCoach();
         const main = e.searchers.items[0];
         if (e.limit_strength) return e.thinkLimited(main, limits);
         var helpers: [256]?std.Thread = .{null} ** 256;
@@ -115,6 +118,7 @@ pub const Engine = struct {
         }
         e.stop.store(true, .monotonic);
         for (helpers[0 .. e.searchers.items.len - 1]) |h| if (h) |t| t.join();
+        e.finishCoach();
         var buf: [5]u8 = undefined;
         var pbuf: [5]u8 = undefined;
         // Expected reply, so the GUI can ponder on it during the opponent's time.
@@ -134,6 +138,7 @@ pub const Engine = struct {
         while (e.pondering.load(.monotonic) and !e.stop_cmd.load(.monotonic)) {
             e.io.sleep(.fromMilliseconds(2), .awake) catch {};
         }
+        e.finishCoach();
         var buf: [5]u8 = undefined;
         var pbuf: [5]u8 = undefined;
         if (main.n_lines > c.line and main.lines[c.line].pv_len >= 2) {
@@ -147,13 +152,12 @@ pub const Engine = struct {
         _ = s.search(limits);
     }
 
-    /// Coach: judges the opponent's last move and writes the comment to the
-    /// log and as an info string. Runs after bestmove, so it doesn't use the
-    /// engine's clock; skipped after a ponder miss (that move wasn't played).
-    fn coachMove(e: *Engine) void {
+    /// Coach: judges the opponent's last move on its own thread while the
+    /// engine thinks. finishCoach sends the comment just before bestmove, as
+    /// GUIs such as En Croissant only read engine output while waiting for it.
+    fn startCoach(e: *Engine) void {
         if (!e.coach_pending) return;
         e.coach_pending = false;
-        if (e.pondering.load(.monotonic)) return;
         const id = e.prev_pos.key ^ @as(u64, e.last_move.data) *% 0x9E3779B97F4A7C15;
         if (id == e.coach_last) return;
         e.coach_last = id;
@@ -162,12 +166,32 @@ pub const Engine = struct {
             e.coach_searcher = c;
             break :blk c;
         };
-        var buf: [1024]u8 = undefined;
-        var w: Io.Writer = .fixed(&buf);
+        e.coach_len = 0;
+        e.coach_thread = std.Thread.spawn(.{}, coachMain, .{ e, s }) catch null;
+    }
+
+    fn coachMain(e: *Engine, s: *search.Searcher) void {
+        var w: Io.Writer = .fixed(&e.coach_buf);
         coach.comment(s, &e.prev_pos, e.last_move, e.game_keys.items, &w) catch return;
-        if (e.coach_stop.load(.monotonic)) return;
-        e.out.print("info string coach: {s}\n", .{w.buffered()});
-        e.appendCoachLog(w.buffered());
+        e.coach_len = w.buffered().len;
+    }
+
+    /// Waits for the comment and sends it to the GUI and the log; dropped
+    /// after a ponder miss (that move wasn't played) or on quit.
+    fn finishCoach(e: *Engine) void {
+        const t = e.coach_thread orelse return;
+        e.coach_thread = null;
+        const missed = e.pondering.load(.monotonic);
+        if (missed) e.coach_stop.store(true, .monotonic);
+        t.join();
+        if (missed) {
+            e.coach_stop.store(false, .monotonic);
+            return;
+        }
+        if (e.coach_stop.load(.monotonic) or e.coach_len == 0) return;
+        const text = e.coach_buf[0..e.coach_len];
+        e.out.print("info string coach: {s}\n", .{text});
+        e.appendCoachLog(text);
     }
 
     fn appendCoachLog(e: *Engine, text: []const u8) void {
@@ -285,8 +309,10 @@ pub const Engine = struct {
         e.stop.store(false, .monotonic);
         e.stop_cmd.store(false, .monotonic);
         e.pondering.store(ponder, .monotonic);
-        // Analysis (go infinite) isn't a game: no coaching.
-        e.coach_pending = e.coach_on and !infinite and e.last_move.data != 0;
+        // Analysis (go infinite) isn't a game, and under a second for the move
+        // is too little to share with the coach.
+        const hurried = limits.hard_ms > 0 and limits.hard_ms < 1000;
+        e.coach_pending = e.coach_on and !infinite and !hurried and e.last_move.data != 0;
         e.search_thread = std.Thread.spawn(.{}, think, .{ e, limits }) catch {
             e.out.print("info string failed to start search\n", .{});
             return;

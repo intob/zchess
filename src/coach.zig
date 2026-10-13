@@ -1,4 +1,4 @@
-//! Live coaching for UCI play: after the engine has answered, judges the
+//! Live coaching for UCI play: while the engine thinks, judges the
 //! opponent's (the user's) last move the way `review` does, and writes a
 //! one-line comment: how much it cost in winning chances, what went wrong in
 //! plain language, and the better move with its line.
@@ -45,7 +45,7 @@ pub fn comment(s: *search.Searcher, before: *const Position, move: Move, keys: [
         const evals = [2]review.Eval{ eb, ea };
         const label = review.classifyKind(&positions, &evals, &.{move}, 0);
         var xb: [128]u8 = undefined;
-        try w.print("{s} {s}: {s} (win chance {d:.0}% -> {d:.0}%). Better was {s} (", .{
+        try w.print("{s} {s}: {s} (win chance {d:.0}% -> {d:.0}%). Better was {s}", .{
             switch (g.cls) {
                 .inaccuracy => "?!",
                 .mistake => "?",
@@ -61,8 +61,12 @@ pub fn comment(s: *search.Searcher, before: *const Position, move: Move, keys: [
             review.winPct(-ea.score),
             best,
         });
-        try writeLine(w, before.*, eb.pv[0..eb.pv_len]);
-        try w.writeAll(").");
+        if (eb.pv_len > 1) {
+            try w.writeAll(" (");
+            try writeLine(w, before.*, eb.pv[0..eb.pv_len]);
+            try w.writeByte(')');
+        }
+        try w.writeByte('.');
         // What the opponent now threatens, for the bigger mistakes.
         if (g.cls != .inaccuracy and ea.pv_len > 0) {
             try w.writeAll(" The punishment: ");
