@@ -1,0 +1,7 @@
+sprt: gen7w-p25-e30-vs-gen7w-p25 (bins/gen7w-p25-e30/bin/zchess) vs base (bins/gen7w-p25/bin/zchess), tc=8+0.08, SPRT [0, 5], concurrency 10 -> sprt/20261013-1035-gen7w-p25-e30-vs-gen7w-p25
+Results of gen7w-p25-e30-vs-gen7w-p25 vs base (8+0.08, 1t, 16MB, openings.epd):
+Elo: 10.51 +/- 6.02, nElo: 16.80 +/- 9.61
+Games: 5024, Wins: 1197, Losses: 1045, Draws: 2782, Points: 2588.0 (51.51 %)
+Ptnml(0-2): [114, 434, 1286, 542, 136], WL/DD Ratio: 0.42
+LLR: 2.96 (100.6%) (-2.94, 2.94) [0.00, 5.00]
+SPRT ([0.00, 5.00]) completed - H1 was accepted

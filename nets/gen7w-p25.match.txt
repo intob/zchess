@@ -1,0 +1,6 @@
+Results of gen7w-p25-vs-gen7w vs base (8+0.08, 1t, 16MB, openings.epd):
+Elo: 44.08 +/- 12.96, nElo: 72.13 +/- 20.98
+Games: 1054, Wins: 294, Losses: 161, Draws: 599, Points: 593.5 (56.31 %)
+Ptnml(0-2): [7, 85, 242, 154, 39], WL/DD Ratio: 0.34
+LLR: 2.95 (100.1%) (-2.94, 2.94) [0.00, 5.00]
+SPRT ([0.00, 5.00]) completed - H1 was accepted

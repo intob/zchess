@@ -189,6 +189,41 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
   bitch-box: **+36.6 ± 12.0, H1** at 1372 games (+391 =734 −247).
   Merged 2026-10-12.
 
+### Loss power, king buckets, longer schedule (started 2026-10-12 18:52, Mac + bitch-box)
+New in the trainer and engine:
+- `train --power <x>`: loss |prediction − target|^x (default 2). 2.5 is what bullet and
+  Stockfish's trainer use; it weights large errors more.
+- King buckets, `-Dking-buckets=N` (1, 4, 8 or 16; 0 = the old layout): each perspective
+  picks an input weight set by its own king's square and mirrors files so that king is on
+  a–d. Net format version 2 (20-byte header with the bucket count). `zig build -Dnet=...`
+  now takes the width and king buckets from the net's header, so `-Dhidden` is optional.
+  A king move that changes bucket refreshes that side's accumulator: ~8–13% lower NPS
+  with 8 buckets (an accumulator cache can win most of it back if they pay off).
+
+`scripts/exp-gen7.sh` (log `exp-gen7.log`, results `sprt/exp-gen7/*.txt`) trains each
+variant on the gen7w window (gen5book, gen5rand, gen6book, gen7book; 147M positions,
+512 wide, seed 1) and SPRTs it, 8+0.08 [0, 5], against the plain gen7w recipe. No
+automatic promotion.
+
+- [x] gen7w (baseline recipe) vs gen6w: **+32.6 ± 11.2, H1** at 1508 games (+428 =793 −287).
+- [x] gen7w-p25 (loss power 2.5) vs gen7w: **+44.1 ± 13.0, H1** at 1054 games (+294 =599 −161).
+- [x] gen7w-kb8 (8 king buckets) vs gen7w: **−60.3 ± 15.9, H0** at 774 games (+112 =417 −245).
+  Overfitting, not a bug: its in-window validation loss was the best (0.00269 vs 0.00303),
+  but on held-out games (gen4, not in the window; trainer `--init <ckpt>`, power 2) it is
+  the worst: gen7w 0.003317, kb8 0.003592, e30 0.003284. 8× the input weights memorise
+  147M positions, and the validation split (random positions of the training games)
+  rewards that. Engine and trainer agree on evals and the 8-bucket tests pass. To retry:
+  a factorised feature transformer and/or 4 buckets, judged on a game-disjoint
+  validation set. Held-out loss also isn't comparable across loss powers (p25: 0.003352).
+- [x] gen7w-e30 (30 epochs) vs gen7w: **+15.6 ± 7.5, H1** at 3166 games (+777 =1754 −635).
+- [x] gen7w-p25-e30 (both winners) vs gen7w-p25: **+10.5 ± 6.0, H1** at 5024 games
+  (+1197 =2782 −1045). They stack, partly: 30 epochs add less on top of power 2.5.
+  (p25, kb8, e30 and p25-e30 were SPRT'd with singular extensions in both binaries.)
+
+**gen7w-p25-e30 promoted** (`nets/best.txt`, 2026-10-13): about +87 over gen6w in
+self-play SPRTs (+32.6, +44.1, +10.5). Recipe for the next generation: loss power 2.5,
+30 epochs. Gauntlet vs Stockfish on bitch-box for its rating: running.
+
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
 can't compare a 512 net with a 256 net: build per size and SPRT the two binaries
