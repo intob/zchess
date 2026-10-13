@@ -5,14 +5,17 @@ Finds the engine in En Croissant's engines.json whose path is the installed
 binary and updates it:
   - name     "zchess"
   - version  embedded net and git commit, e.g. "gen6w c649475" (+"-dirty")
-  - elo      the net's rating from nets/ratings.txt, if listed
+  - elo      the UCI_Elo it plays at when its UCI_LimitStrength setting is on,
+             else the net's rating from nets/ratings.txt; removed if neither is
+             known (rather than showing another net's rating)
   - image    zig-out/zchess.png, if it exists
   - settings values kept for options the binary still has (spins clamped to
              their new range); settings for options it no longer has dropped
 
 Does nothing (and never fails the build) if En Croissant isn't installed or
 no entry points at this binary. En Croissant reads engines.json at startup, so
-restart it to see the changes.
+restart it to see the changes (the build says so when it's running; a setting
+changed in the running app before then writes its old copy back).
 
 usage: scripts/ec-engine.py <binary to query> <installed path> [net path]
 """
@@ -63,6 +66,18 @@ def rating(net: str) -> int | None:
     return None
 
 
+def limited_elo(settings: list) -> int | None:
+    """The UCI_Elo the entry plays at, if its UCI_LimitStrength setting is on."""
+    values = {s.get("name"): s.get("value") for s in settings}
+    if values.get("UCI_LimitStrength") in (True, "true") and isinstance(values.get("UCI_Elo"), (int, float)):
+        return int(values["UCI_Elo"])
+    return None
+
+
+def ec_running() -> bool:
+    return subprocess.run(["pgrep", "-x", "en-croissant"], capture_output=True).returncode == 0
+
+
 def main() -> None:
     binary, installed = sys.argv[1], os.path.realpath(sys.argv[2])
     net_path = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -80,8 +95,6 @@ def main() -> None:
     for e in mine:
         e["name"] = "zchess"
         e["version"] = f"{net} {git_version()}"
-        if elo is not None:
-            e["elo"] = elo
         if image.exists():
             e["image"] = str(image)
         settings = []
@@ -93,6 +106,11 @@ def main() -> None:
                 s["value"] = max(o.get("min", s["value"]), min(o.get("max", s["value"]), s["value"]))
             settings.append(s)
         e["settings"] = settings
+        shown = limited_elo(settings) or elo
+        if shown is not None:
+            e["elo"] = shown
+        else:
+            e.pop("elo", None)
 
     text = json.dumps(engines, indent=4)
     if text == ENGINES.read_text():
@@ -102,7 +120,10 @@ def main() -> None:
     with os.fdopen(fd, "w") as f:
         f.write(text)
     os.replace(tmp, ENGINES)
-    print(f"ec-engine: En Croissant entry updated: zchess {mine[0]['version']}", file=sys.stderr)
+    shown = f", Elo {mine[0]['elo']}" if "elo" in mine[0] else ""
+    print(f"ec-engine: En Croissant entry updated: zchess {mine[0]['version']}{shown}", file=sys.stderr)
+    if ec_running():
+        print("ec-engine: En Croissant is running: restart it to see this (it reads engines.json at startup)", file=sys.stderr)
 
 
 if __name__ == "__main__":
