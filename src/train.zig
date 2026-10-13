@@ -2,7 +2,7 @@
 //! data-parallel over all cores, cosine learning-rate decay, and quantised
 //! export in the format `nnue.zig` loads.
 //!
-//! Loss: (sigmoid(out) - target)^2 with
+//! Loss: |sigmoid(out) - target|^power (power 2 by default) with
 //!   target = (1 - wdl) * sigmoid(score / SCALE) + wdl * game_result
 //! both from the side to move's point of view.
 
@@ -36,6 +36,7 @@ const help =
     \\  --batch <n>        positions per batch (default 16384)
     \\  --lr <x>           initial learning rate, cosine-decayed to 2% (default 0.001)
     \\  --wdl <x>          weight of game result vs. search score in the target (default 0.1)
+    \\  --power <x>        loss exponent: |prediction - target|^x (default 2)
     \\  --threads <n>      worker threads (default: all cores)
     \\  --init <ckpt>      start from a float checkpoint instead of random weights
     \\  --seed <n>         shuffle/initialisation seed (default 1)
@@ -47,13 +48,29 @@ const Feats = struct {
     nstm: [32]u16 = undefined,
     n: usize = 0,
     side: bb.Color = 0,
-};
+    pcs: [32]bb.Piece = undefined,
+    sqs: [32]bb.Square = undefined,
+    ksq: [2]bb.Square = .{ 0, 0 },
 
-fn addFeature(f: *Feats, pc: bb.Piece, sq: bb.Square) void {
-    f.stm[f.n] = @intCast(nnue.featureIndex(f.side, pc, sq));
-    f.nstm[f.n] = @intCast(nnue.featureIndex(f.side ^ 1, pc, sq));
-    f.n += 1;
-}
+    fn collect(f: *Feats, pc: bb.Piece, sq: bb.Square) void {
+        f.pcs[f.n] = pc;
+        f.sqs[f.n] = sq;
+        if (bb.pieceType(pc) == bb.KING) f.ksq[bb.pieceColor(pc)] = sq;
+        f.n += 1;
+    }
+
+    fn fromRecord(rec: *const Record) Feats {
+        var f = Feats{ .side = @intCast(rec.stm) };
+        rec.forEachPiece(&f, collect);
+        const vs = nnue.kingView(f.side, f.ksq[f.side]);
+        const vn = nnue.kingView(f.side ^ 1, f.ksq[f.side ^ 1]);
+        for (0..f.n) |i| {
+            f.stm[i] = @intCast(nnue.featureIndex(f.side, vs, f.pcs[i], f.sqs[i]));
+            f.nstm[i] = @intCast(nnue.featureIndex(f.side ^ 1, vn, f.pcs[i], f.sqs[i]));
+        }
+        return f;
+    }
+};
 
 inline fn screlu(x: f32) f32 {
     const c = std.math.clamp(x, 0.0, 1.0);
@@ -77,6 +94,7 @@ const Trainer = struct {
     losses: []f64,
     threads: usize,
     wdl: f32,
+    power: f32,
 
     const Sample = struct {
         acc_s: [H]f32 align(64),
@@ -90,8 +108,7 @@ const Trainer = struct {
     };
 
     fn forward(t: *const Trainer, rec: *const Record, s: *Sample) void {
-        s.feats = .{ .side = @intCast(rec.stm) };
-        rec.forEachPiece(&s.feats, addFeature);
+        s.feats = Feats.fromRecord(rec);
         s.bucket = @min((s.feats.n -| 2) / 4, NB - 1);
 
         const ftb = t.params[OFF_FTB..][0..H];
@@ -125,7 +142,7 @@ const Trainer = struct {
     fn backward(t: *const Trainer, s: *const Sample, grad: []f32) f64 {
         const pred = sigmoid(s.out);
         const err = pred - s.target;
-        const g = 2.0 * err * pred * (1.0 - pred);
+        const g = t.power * std.math.sign(err) * std.math.pow(f32, @abs(err), t.power - 1) * pred * (1.0 - pred);
 
         grad[OFF_OB + s.bucket] += g;
         const ow = t.params[OFF_OW + s.bucket * 2 * H ..][0 .. 2 * H];
@@ -148,7 +165,11 @@ const Trainer = struct {
                 gn[j] += dn[j];
             }
         }
-        return err * err;
+        return t.lossOf(err);
+    }
+
+    inline fn lossOf(t: *const Trainer, err: f32) f64 {
+        return if (t.power == 2.0) err * err else std.math.pow(f32, @abs(err), t.power);
     }
 
     fn gradWorker(t: *Trainer, tid: usize, batch: []const u32) void {
@@ -172,8 +193,7 @@ const Trainer = struct {
         var s: Sample = undefined;
         for (idxs[lo..hi]) |idx| {
             t.forward(&t.data[idx], &s);
-            const e = sigmoid(s.out) - s.target;
-            loss += e * e;
+            loss += t.lossOf(sigmoid(s.out) - s.target);
         }
         t.losses[tid] = loss;
     }
@@ -284,6 +304,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var batch_size: usize = 16384;
     var lr: f32 = 0.001;
     var wdl: f32 = 0.1;
+    var power: f32 = 2.0;
     var threads: usize = std.Thread.getCpuCount() catch 4;
     var init_path: []const u8 = "";
     var seed: u64 = 1;
@@ -296,6 +317,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         else if (p.int(usize, a, "--batch")) |v| batch_size = @max(v, 64)
         else if (p.float(a, "--lr")) |v| lr = v
         else if (p.float(a, "--wdl")) |v| wdl = v
+        else if (p.float(a, "--power")) |v| power = std.math.clamp(v, 1.0, 4.0)
         else if (p.int(usize, a, "--threads")) |v| threads = std.math.clamp(v, 1, 256)
         else if (p.flag(a, "--init")) |v| init_path = v
         else if (p.int(u64, a, "--seed")) |v| seed = v
@@ -377,15 +399,15 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     const losses = try gpa.alloc(f64, threads);
     defer gpa.free(losses);
 
-    var t = Trainer{ .data = data[0..filled], .params = params, .m = m, .v = v, .grads = grads, .losses = losses, .threads = threads, .wdl = wdl };
+    var t = Trainer{ .data = data[0..filled], .params = params, .m = m, .v = v, .grads = grads, .losses = losses, .threads = threads, .wdl = wdl, .power = power };
 
     const ckpt_path = try std.fmt.allocPrint(gpa, "{s}.ckpt", .{out_path});
     defer gpa.free(ckpt_path);
 
     const steps_per_epoch = train_idx.len / batch_size;
     const total_steps = steps_per_epoch * epochs;
-    out.print("training {d}->{d}x2->1 ({d} buckets) on {d} positions ({d} validation), {d} epochs x {d} batches, {d} threads\n", .{
-        IN, H, NB, train_idx.len, val_n, epochs, steps_per_epoch, threads,
+    out.print("training {d}->{d}x2->1 ({d} king buckets, {d} output buckets, loss power {d}) on {d} positions ({d} validation), {d} epochs x {d} batches, {d} threads\n", .{
+        IN, H, nnue.KING_BUCKETS, NB, power, train_idx.len, val_n, epochs, steps_per_epoch, threads,
     });
 
     try t.parallel(Trainer.lossWorker, @as([]const u32, val_idx));

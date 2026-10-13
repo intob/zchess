@@ -336,7 +336,7 @@ pub const Searcher = struct {
         const child = pos.makeMove(m);
         self.tt.prefetch(child.key);
         self.moved[ply] = contIndex(pos, m);
-        if (self.net) |n| nnue.update(n, &self.acc[ply], &self.acc[ply + 1], &child.dirty);
+        if (self.net) |n| nnue.update(n, &self.acc[ply], &self.acc[ply + 1], &child);
         self.keys[self.key_len] = child.key;
         self.key_len += 1;
         self.was_null[ply + 1] = false;

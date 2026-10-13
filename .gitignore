@@ -24,3 +24,6 @@ gen6w.log
 zig-out-x86-cal*/
 sprt-*.log
 gen*w.log
+zig-out-x86-sprt-*/
+nets/*.done
+exp-*.log

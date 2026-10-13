@@ -38,11 +38,16 @@ hosts() {
 # Network width, read from the .nnue header (u32 at byte 8).
 hidden_of() { od -An -tu4 -j8 -N4 "$1" | tr -d ' '; }
 
-build() { # [net]: build for that net's width (default 256)
-    local h=256
-    [ -n "${1:-}" ] && [ "$1" != hce ] && h=$(hidden_of "$1")
-    zig build -Dtarget=aarch64-linux-musl -Dcpu=cortex_a76 -Dart=false -Dhidden="$h" -p "$PREFIX_ARM"
-    zig build -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Dart=false -Dhidden="$h" -p "$PREFIX_X86"
+# King buckets: format version 2 (u32 at byte 4) stores them at byte 16.
+king_buckets_of() {
+    if [ "$(od -An -tu4 -j4 -N4 "$1" | tr -d ' ')" -ge 2 ]; then od -An -tu4 -j16 -N4 "$1" | tr -d ' '; else echo 0; fi
+}
+
+build() { # [net]: build for that net's width and king buckets (default 256, none)
+    local h=256 kb=0
+    [ -n "${1:-}" ] && [ "$1" != hce ] && h=$(hidden_of "$1") && kb=$(king_buckets_of "$1")
+    zig build -Dtarget=aarch64-linux-musl -Dcpu=cortex_a76 -Dart=false -Dhidden="$h" -Dking-buckets="$kb" -p "$PREFIX_ARM"
+    zig build -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Dart=false -Dhidden="$h" -Dking-buckets="$kb" -p "$PREFIX_X86"
 }
 
 # Copy binary, guard and net to the given hosts (default: all). Files are

@@ -8,8 +8,11 @@ pub fn build(b: *std.Build) void {
     // Optionally embed a trained network: zig build -Dnet=nets/gen3.nnue
     const net_path = b.option([]const u8, "net", "NNUE file to embed as the default evaluation");
 
-    // Network width; nets only load into a binary built with the same size.
-    const hidden = b.option(u32, "hidden", "NNUE hidden layer size (default 256, multiple of 16)") orelse 256;
+    // Network shape; nets only load into a binary built with the same shape.
+    // With -Dnet both default to what that file's header says.
+    const shape = if (net_path) |p| netShape(b, p) else NetShape{};
+    const hidden = b.option(u32, "hidden", "NNUE hidden layer size (default 256 or the -Dnet's, multiple of 16)") orelse shape.hidden;
+    const king_buckets = b.option(u32, "king-buckets", "NNUE king buckets: 0 (none, unmirrored), 1, 4, 8 or 16 (default 0 or the -Dnet's)") orelse shape.king_buckets;
 
     // Opening names and the strong players' move tree for the coach
     // (zchess openings); embedded when the file exists.
@@ -20,6 +23,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "has_net", net_path != null);
     options.addOption(bool, "has_openings", openings_path != null);
     options.addOption(u32, "hidden", hidden);
+    options.addOption(u32, "king_buckets", king_buckets);
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -73,6 +77,23 @@ pub fn build(b: *std.Build) void {
     if (openings_path) |p| test_mod.addAnonymousImport("openings", .{ .root_source_file = b.path(p) });
     const tests = b.addTest(.{ .root_module = test_mod });
     b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(tests).step);
+}
+
+const NetShape = struct { hidden: u32 = 256, king_buckets: u32 = 0 };
+
+/// Hidden size and king buckets from a .nnue header (see src/nnue.zig).
+fn netShape(b: *std.Build, path: []const u8) NetShape {
+    const io = b.graph.io;
+    const f = b.build_root.handle.openFile(io, path, .{}) catch return .{};
+    defer f.close(io);
+    var h: [20]u8 = undefined;
+    const n = f.readPositionalAll(io, &h, 0) catch return .{};
+    if (n < 16 or !std.mem.eql(u8, h[0..4], "ZCNN")) return .{};
+    const version = std.mem.readInt(u32, h[4..8], .little);
+    return .{
+        .hidden = std.mem.readInt(u32, h[8..12], .little),
+        .king_buckets = if (version >= 2 and n == 20) std.mem.readInt(u32, h[16..20], .little) else 0,
+    };
 }
 
 fn fileExists(b: *std.Build, path: []const u8) bool {

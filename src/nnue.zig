@@ -1,5 +1,11 @@
-//! NNUE inference: (768 -> HIDDEN) x 2 perspectives -> 1, SCReLU activation,
-//! 8 output buckets by piece count. Quantised i16 weights, NEON via @Vector.
+//! NNUE inference: (768 x KING_BUCKETS -> HIDDEN) x 2 perspectives -> 1,
+//! SCReLU activation, 8 output buckets by piece count. Quantised i16 weights,
+//! NEON via @Vector.
+//!
+//! King buckets (built with -Dking-buckets=N): each perspective picks one of N
+//! input weight sets by where its own king stands, and mirrors the board
+//! left-right so that king is always on files a-d. 0 = the original layout
+//! (one weight set, no mirroring, file format version 1).
 
 const std = @import("std");
 const bb = @import("bitboard.zig");
@@ -8,8 +14,11 @@ const build_options = @import("build_options");
 
 const Position = position.Position;
 
-pub const INPUTS = 768;
-/// Set at build time with -Dhidden= (default 256).
+/// Set at build time with -Dking-buckets= (default 0; from the -Dnet header).
+pub const KING_BUCKETS: usize = build_options.king_buckets;
+const MIRROR = KING_BUCKETS != 0;
+pub const INPUTS: usize = 768 * (if (MIRROR) KING_BUCKETS else 1);
+/// Set at build time with -Dhidden= (default 256; from the -Dnet header).
 pub const HIDDEN: usize = build_options.hidden;
 pub const BUCKETS = 8;
 pub const QA = 255;
@@ -17,8 +26,32 @@ pub const QB = 64;
 pub const SCALE = 400;
 
 pub const MAGIC = "ZCNN";
-pub const VERSION: u32 = 1;
-pub const HEADER_SIZE = 16;
+/// Version 2 adds a king-bucket count to the header.
+pub const VERSION: u32 = if (MIRROR) 2 else 1;
+pub const HEADER_SIZE = if (MIRROR) 20 else 16;
+
+/// King bucket of each own-king square on files a-d (after mirroring),
+/// rank 1 first. Finer near the back rank, where kings spend most of the game.
+const king_layout: [32]u8 = switch (KING_BUCKETS) {
+    0, 1 => .{0} ** 32,
+    4 => .{
+        0, 0, 1, 1,
+        2, 2, 2, 2,
+    } ++ .{3} ** 24,
+    8 => .{
+        0, 1, 2, 3,
+        4, 4, 5, 5,
+        6, 6, 6, 6,
+    } ++ .{7} ** 20,
+    16 => .{
+        0,  1,  2,  3,
+        4,  5,  6,  7,
+        8,  8,  9,  9,
+        10, 10, 11, 11,
+        12, 12, 13, 13,
+    } ++ .{ 14, 14, 15, 15 } ** 3,
+    else => @compileError("-Dking-buckets must be 0, 1, 4, 8 or 16"),
+};
 
 const LANES = 16;
 const V16 = @Vector(LANES, i16);
@@ -33,12 +66,13 @@ pub const Network = struct {
     pub const file_size = HEADER_SIZE + 2 * (INPUTS * HIDDEN + HIDDEN + BUCKETS * 2 * HIDDEN + BUCKETS);
 
     pub fn loadBytes(net: *Network, bytes: []const u8) !void {
-        if (bytes.len != file_size) return error.BadNetSize;
-        if (!std.mem.eql(u8, bytes[0..4], MAGIC)) return error.BadNetMagic;
+        if (bytes.len < 16 or !std.mem.eql(u8, bytes[0..4], MAGIC)) return error.BadNetMagic;
         const version = std.mem.readInt(u32, bytes[4..8], .little);
         const hidden = std.mem.readInt(u32, bytes[8..12], .little);
         const buckets = std.mem.readInt(u32, bytes[12..16], .little);
         if (version != VERSION or hidden != HIDDEN or buckets != BUCKETS) return error.BadNetShape;
+        if (bytes.len != file_size) return error.BadNetSize;
+        if (MIRROR and std.mem.readInt(u32, bytes[16..20], .little) != KING_BUCKETS) return error.BadNetShape;
         var off: usize = HEADER_SIZE;
         inline for (.{ "ft_w", "ft_b", "out_w", "out_b" }) |name| {
             const dst = std.mem.asBytes(&@field(net, name));
@@ -53,6 +87,7 @@ pub const Network = struct {
         std.mem.writeInt(u32, header[4..8], VERSION, .little);
         std.mem.writeInt(u32, header[8..12], HIDDEN, .little);
         std.mem.writeInt(u32, header[12..16], BUCKETS, .little);
+        if (MIRROR) std.mem.writeInt(u32, header[16..20], KING_BUCKETS, .little);
         try w.writeAll(&header);
         inline for (.{ "ft_w", "ft_b", "out_w", "out_b" }) |name| {
             try w.writeAll(std.mem.asBytes(&@field(net, name)));
@@ -70,13 +105,40 @@ comptime {
 
 pub const Accumulator = struct {
     v: [2][HIDDEN]i16 align(64),
+    /// King view each perspective was built for; a king move that changes it
+    /// needs a refresh of that perspective.
+    view: [2]KingView,
 };
 
+/// Which weight set a perspective uses, and whether it mirrors files.
+pub const KingView = packed struct(u8) {
+    bucket: u7 = 0,
+    mirror: bool = false,
+
+    pub inline fn eql(a: KingView, b: KingView) bool {
+        return @as(u8, @bitCast(a)) == @as(u8, @bitCast(b));
+    }
+};
+
+/// The view of `persp`, whose own king stands on `ksq`.
+pub inline fn kingView(persp: bb.Color, ksq: bb.Square) KingView {
+    if (!MIRROR) return .{};
+    const rel: u8 = if (persp == bb.BLACK) ksq ^ 56 else ksq;
+    const mirror = rel & 7 >= 4;
+    const folded = if (mirror) rel ^ 7 else rel;
+    return .{ .bucket = @intCast(king_layout[(folded >> 3) * 4 + (folded & 7)]), .mirror = mirror };
+}
+
+pub inline fn positionView(persp: bb.Color, pos: *const Position) KingView {
+    return if (MIRROR) kingView(persp, pos.kingSq(persp)) else .{};
+}
+
 /// Feature index of `piece` on `sq` seen from `persp`'s side of the board.
-pub inline fn featureIndex(persp: bb.Color, piece: bb.Piece, sq: bb.Square) usize {
+pub inline fn featureIndex(persp: bb.Color, view: KingView, piece: bb.Piece, sq: bb.Square) usize {
     const rel_color: usize = bb.pieceColor(piece) ^ persp;
-    const rel_sq: usize = if (persp == bb.BLACK) sq ^ 56 else sq;
-    return (rel_color * 6 + bb.pieceType(piece)) * 64 + rel_sq;
+    var rel_sq: usize = if (persp == bb.BLACK) sq ^ 56 else sq;
+    if (view.mirror) rel_sq ^= 7;
+    return @as(usize, view.bucket) * 768 + (rel_color * 6 + bb.pieceType(piece)) * 64 + rel_sq;
 }
 
 pub inline fn outputBucket(pos: *const Position) usize {
@@ -89,31 +151,44 @@ inline fn row(net: *const Network, feat: usize) *const [HIDDEN]i16 {
 }
 
 pub fn refresh(net: *const Network, acc: *Accumulator, pos: *const Position) void {
-    for (0..2) |pi| {
-        const persp: bb.Color = @intCast(pi);
-        acc.v[pi] = net.ft_b;
-        var occ = pos.occupied();
-        while (occ != 0) {
-            const sq = bb.popLsb(&occ);
-            const w = row(net, featureIndex(persp, pos.board[sq], sq));
-            var i: usize = 0;
-            while (i < HIDDEN) : (i += LANES) {
-                const a: V16 = acc.v[pi][i..][0..LANES].*;
-                const b: V16 = w[i..][0..LANES].*;
-                acc.v[pi][i..][0..LANES].* = a +% b;
-            }
+    refreshPerspective(net, acc, pos, bb.WHITE);
+    refreshPerspective(net, acc, pos, bb.BLACK);
+}
+
+fn refreshPerspective(net: *const Network, acc: *Accumulator, pos: *const Position, persp: bb.Color) void {
+    const view = positionView(persp, pos);
+    acc.view[persp] = view;
+    acc.v[persp] = net.ft_b;
+    var occ = pos.occupied();
+    while (occ != 0) {
+        const sq = bb.popLsb(&occ);
+        const w = row(net, featureIndex(persp, view, pos.board[sq], sq));
+        var i: usize = 0;
+        while (i < HIDDEN) : (i += LANES) {
+            const a: V16 = acc.v[persp][i..][0..LANES].*;
+            const b: V16 = w[i..][0..LANES].*;
+            acc.v[persp][i..][0..LANES].* = a +% b;
         }
     }
 }
 
-/// dst = src + added features - removed features, for both perspectives.
-pub fn update(net: *const Network, src: *const Accumulator, dst: *Accumulator, d: *const position.Dirty) void {
+/// dst = src + added features - removed features, for both perspectives, or a
+/// fresh build of a perspective whose king moved to another view. `pos` is the
+/// position after the move (its `dirty` lists the changes).
+pub fn update(net: *const Network, src: *const Accumulator, dst: *Accumulator, pos: *const Position) void {
+    const d = &pos.dirty;
     for (0..2) |pi| {
         const persp: bb.Color = @intCast(pi);
+        const view = positionView(persp, pos);
+        if (!view.eql(src.view[persp])) {
+            refreshPerspective(net, dst, pos, persp);
+            continue;
+        }
+        dst.view[persp] = view;
         var adds: [2]*const [HIDDEN]i16 = undefined;
         var subs: [2]*const [HIDDEN]i16 = undefined;
-        for (0..d.n_add) |k| adds[k] = row(net, featureIndex(persp, d.add[k].piece, d.add[k].sq));
-        for (0..d.n_sub) |k| subs[k] = row(net, featureIndex(persp, d.sub[k].piece, d.sub[k].sq));
+        for (0..d.n_add) |k| adds[k] = row(net, featureIndex(persp, view, d.add[k].piece, d.add[k].sq));
+        for (0..d.n_sub) |k| subs[k] = row(net, featureIndex(persp, view, d.sub[k].piece, d.sub[k].sq));
 
         var i: usize = 0;
         while (i < HIDDEN) : (i += LANES) {
@@ -201,12 +276,43 @@ test "incremental update matches refresh" {
         const m = list.moves[r.uintLessThan(usize, list.len)];
         const child = pos.makeMove(m);
         var inc: Accumulator = undefined;
-        update(net, &acc, &inc, &child.dirty);
+        update(net, &acc, &inc, &child);
         var fresh: Accumulator = undefined;
         refresh(net, &fresh, &child);
         try std.testing.expectEqualSlices(i16, &fresh.v[0], &inc.v[0]);
         try std.testing.expectEqualSlices(i16, &fresh.v[1], &inc.v[1]);
         pos = child;
         acc = inc;
+    }
+}
+
+test "king buckets: mirrored positions evaluate the same" {
+    if (!MIRROR) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const net = try gpa.create(Network);
+    defer gpa.destroy(net);
+    var prng = std.Random.DefaultPrng.init(2);
+    const r = prng.random();
+    for (&net.ft_w) |*x| x.* = r.intRangeAtMost(i16, -60, 60);
+    for (&net.ft_b) |*x| x.* = r.intRangeAtMost(i16, -60, 60);
+    for (&net.out_w) |*bk| for (bk) |*x| {
+        x.* = r.intRangeAtMost(i16, -127, 127);
+    };
+    for (&net.out_b) |*x| x.* = r.intRangeAtMost(i16, -1000, 1000);
+
+    const fens = [_][]const u8{
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w - - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 b - - 0 1",
+        "6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 1",
+    };
+    for (fens) |fen| {
+        const pos = try Position.fromFen(fen);
+        var mirrored = Position{ .side = pos.side };
+        var occ = pos.occupied();
+        while (occ != 0) {
+            const sq = bb.popLsb(&occ);
+            mirrored.addPiece(pos.board[sq], sq ^ 7);
+        }
+        try std.testing.expectEqual(evaluateFresh(net, &pos), evaluateFresh(net, &mirrored));
     }
 }

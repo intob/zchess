@@ -211,7 +211,7 @@ fn drawFibres(c: *Canvas, net: *const nnue.Network, s: *const Scan) void {
         const from = squareCenter(sq);
         for (0..2) |hemi| {
             const persp: bb.Color = if (hemi == 0) stm else stm ^ 1;
-            const row = net.ft_w[nnue.featureIndex(persp, pc, sq) * H ..][0..H];
+            const row = net.ft_w[nnue.featureIndex(persp, s.acc.view[persp], pc, sq) * H ..][0..H];
             // The 5 firing neurons this piece drives hardest.
             var best: [5]usize = .{ 0, 0, 0, 0, 0 };
             var best_w: [5]i32 = .{ -1, -1, -1, -1, -1 };
@@ -470,7 +470,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     const name = std.fs.path.basename(net_path);
     c.text(W - 52 - Canvas.textWidth(name, 3), 44, name, 3, ACCENT);
     var sub_buf: [128]u8 = undefined;
-    const sub = std.fmt.bufPrint(&sub_buf, "768 -> {d}X2 -> 1   SCRELU   {d} OUTPUT BUCKETS   SHA256 {x}", .{ H, nnue.BUCKETS, digest[0..6] }) catch "";
+    const sub = std.fmt.bufPrint(&sub_buf, "{d} -> {d}X2 -> 1   SCRELU   {d} OUTPUT BUCKETS   SHA256 {x}", .{ nnue.INPUTS, H, nnue.BUCKETS, digest[0..6] }) catch "";
     c.text(52, 86, sub, 2, DIM);
 
     drawBrain(&c);
