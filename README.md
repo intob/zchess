@@ -31,6 +31,7 @@ UCI options: `Hash`, `Threads`, `EvalFile` (path to a `.nnue`), `UseNNUE`, `Mult
 `Ponder`, `Move Overhead`, `Clear Hash`, and `UCI_LimitStrength` + `UCI_Elo` (100–3000:
 smaller search, more candidate moves and a weighted random pick at lower ratings;
 `zchess play --elo N` does the same in the terminal).
+`Coach` + `CoachLog`: a comment on each of your moves (see Game review).
 Extra commands in UCI mode: `d` (show the board), `eval`, `perft <depth>`.
 
 ## Training pipeline
@@ -120,6 +121,17 @@ Chess.com games, reviews them and writes one annotated PGN per game into
 which turns the mistakes into a puzzle database in En Croissant's own format
 ("<user> mistakes" in the Puzzles tab): *spot the threat* (your bad move is played,
 find the punishment) and *find the win* (find the capture or mate you missed).
+
+Live coaching while you play: set the UCI option `Coach` to true and, after each
+reply, zchess judges the move you just made the same way (300k nodes for the
+position before and after it, on the engine's time after `bestmove`, not its clock).
+The comment is sent as `info string coach: ...` and appended to `CoachLog`
+(default `~/zchess-coach.log`, `<none>` to turn the file off), one line per move
+with a header per game:
+
+    2... Qh4?? Blunder: left your queen hanging (win chance 49% -> 2%). Better was Nc6 (Nc6 Nc3 Nf6 Bc4). The punishment: Nxh4 Nf6 Nc3 Bc5. Eval: -9.99
+
+`go infinite` (analysis) and ponder misses aren't commented on.
 
 ## Formats
 

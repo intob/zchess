@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
     const rest = if (args.len >= 2) args[2..] else args[0..0];
 
     if (cmd.len == 0 or std.mem.eql(u8, cmd, "uci")) {
-        const engine = try uci.Engine.init(gpa, io, &out);
+        const engine = try uci.Engine.init(gpa, io, &out, init.environ_map.get("HOME"));
         if (std.mem.eql(u8, cmd, "uci")) _ = try engine.command("uci");
         try engine.loop();
     } else if (std.mem.eql(u8, cmd, "bench")) {

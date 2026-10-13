@@ -33,14 +33,14 @@ const help =
     \\
 ;
 
-const Class = enum { good, inaccuracy, mistake, blunder };
-const Kind = enum { other, hung_piece, missed_capture, missed_mate, allowed_mate, bad_capture };
+pub const Class = enum { good, inaccuracy, mistake, blunder };
+pub const Kind = enum { other, hung_piece, missed_capture, missed_mate, allowed_mate, bad_capture };
 
-const piece_names = [6][]const u8{ "pawn", "knight", "bishop", "rook", "queen", "king" };
+pub const piece_names = [6][]const u8{ "pawn", "knight", "bishop", "rook", "queen", "king" };
 const see_value = [6]i32{ 100, 300, 300, 500, 900, 0 };
 
 /// Winning chances (0..100) for the side with score `cp` (Lichess formula).
-fn winPct(cp: i32) f64 {
+pub fn winPct(cp: i32) f64 {
     const c: f64 = @floatFromInt(std.math.clamp(cp, -1500, 1500));
     return 50 + 50 * (2 / (1 + @exp(-0.00368208 * c)) - 1);
 }
@@ -79,12 +79,39 @@ const Collector = struct {
 };
 
 /// Search result for one position of a game.
-const Eval = struct {
+pub const Eval = struct {
     score: i32, // side to move's point of view
     best: Move,
     pv: [8]Move,
     pv_len: usize,
 };
+
+/// Searches `p` (preceded by the positions with `keys`, for repetitions) for
+/// about `nodes` nodes.
+pub fn evalPosition(s: *search.Searcher, p: *const Position, keys: []const u64, nodes: u64) Eval {
+    var list = movegen.MoveList{};
+    movegen.generate(p, &list, .all);
+    if (list.len == 0) return .{ .score = if (p.inCheck()) -search.MATE else 0, .best = Move.none, .pv = undefined, .pv_len = 0 };
+    s.setPosition(p, keys);
+    const r = s.search(.{ .soft_nodes = nodes, .nodes = nodes * 3 });
+    var e = Eval{ .score = r.score, .best = r.move, .pv = undefined, .pv_len = @min(s.pv_len[0], 8) };
+    for (0..e.pv_len) |k| e.pv[k] = s.pv[0][k];
+    if (e.pv_len == 0 or !e.pv[0].eql(r.move)) {
+        e.pv[0] = r.move;
+        e.pv_len = 1;
+    }
+    return e;
+}
+
+pub const Grade = struct { drop: f64, cls: Class };
+
+/// How much a move cost the mover in winning chances, from the scores before
+/// it (mover's view) and after it (opponent's view).
+pub fn grade(before: i32, after_opp: i32) Grade {
+    const drop = @max(0, winPct(before) - winPct(-after_opp));
+    const cls: Class = if (drop >= 30) .blunder else if (drop >= 20) .mistake else if (drop >= 10) .inaccuracy else .good;
+    return .{ .drop = drop, .cls = cls };
+}
 
 const Flag = struct {
     ply: usize,
@@ -134,7 +161,7 @@ fn victimOf(pos: *const Position, m: Move) ?bb.PieceType {
     return bb.pieceType(pos.board[m.to()]);
 }
 
-const Label = struct {
+pub const Label = struct {
     kind: Kind = .other,
     piece: ?bb.PieceType = null,
     /// A second lesson in the same move: "and left your knight hanging".
@@ -148,7 +175,7 @@ const Label = struct {
 /// (centipawns, by static exchange), even if the capturing piece is lost back.
 const min_gain = 200;
 
-fn classifyKind(positions: []const Position, evals: []const Eval, moves: []const Move, i: usize) Label {
+pub fn classifyKind(positions: []const Position, evals: []const Eval, moves: []const Move, i: usize) Label {
     const before = evals[i].score; // mover's view, before the move
     const after_opp = evals[i + 1].score; // opponent's view, after the move
     if (after_opp >= search.MATE_BOUND and before > -search.MATE_BOUND) return .{ .kind = .allowed_mate };
@@ -182,7 +209,7 @@ fn classifyKind(positions: []const Position, evals: []const Eval, moves: []const
     return .{};
 }
 
-fn explain(l: Label, best_san: []const u8, buf: []u8) []const u8 {
+pub fn explain(l: Label, best_san: []const u8, buf: []u8) []const u8 {
     const p = if (l.piece) |pt| piece_names[pt] else "piece";
     return switch (l.kind) {
         .allowed_mate => "allowed a forced checkmate",
@@ -254,21 +281,7 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
     s.tt.clear();
     s.clearHistory();
     for (positions.items, 0..) |*p, i| {
-        var list = movegen.MoveList{};
-        movegen.generate(p, &list, .all);
-        if (list.len == 0) {
-            evals[i] = .{ .score = if (p.inCheck()) -search.MATE else 0, .best = Move.none, .pv = undefined, .pv_len = 0 };
-        } else {
-            s.setPosition(p, keys.items);
-            const r = s.search(.{ .soft_nodes = ctx.nodes, .nodes = ctx.nodes * 3 });
-            var e = Eval{ .score = r.score, .best = r.move, .pv = undefined, .pv_len = @min(s.pv_len[0], 8) };
-            for (0..e.pv_len) |k| e.pv[k] = s.pv[0][k];
-            if (e.pv_len == 0 or !e.pv[0].eql(r.move)) {
-                e.pv[0] = r.move;
-                e.pv_len = 1;
-            }
-            evals[i] = e;
-        }
+        evals[i] = evalPosition(s, p, keys.items, ctx.nodes);
         try keys.append(gpa, p.key);
     }
 
@@ -280,10 +293,11 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
     var user_moves: usize = 0;
     for (0..n) |i| {
         if (positions.items[i].side != user_color) continue;
-        const drop = @max(0, winPct(evals[i].score) - winPct(-evals[i + 1].score));
+        const g = grade(evals[i].score, evals[i + 1].score);
+        const drop = g.drop;
+        const cls = g.cls;
         acc_sum += moveAccuracy(drop);
         user_moves += 1;
-        const cls: Class = if (drop >= 30) .blunder else if (drop >= 20) .mistake else if (drop >= 10) .inaccuracy else .good;
         if (cls == .good) continue;
         const label = classifyKind(positions.items, evals, moves.items, i);
         try flags.append(gpa, .{ .ply = i, .cls = cls, .label = label, .drop = drop });

@@ -11,15 +11,17 @@ const cli = @import("cli.zig");
 const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
 const strength = @import("strength.zig");
+const coach = @import("coach.zig");
 
 const Position = position.Position;
 const Move = position.Move;
 
 const help =
-    \\usage: zchess play [--black] [--time <seconds>] [--elo <100-3000>] [--net <file|hce>] [--fen <fen>]
+    \\usage: zchess play [--black] [--time <seconds>] [--elo <100-3000>] [--net <file|hce>] [--fen <fen>] [--coach]
     \\
     \\Enter moves as SAN (e4, Nf3, exd5, O-O, e8=Q) or coordinates (e2e4).
     \\Commands: moves, undo, flip, hint, help, quit
+    \\--coach: a comment on each of your moves, judged as `zchess review` would.
     \\
 ;
 
@@ -150,6 +152,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var elo: ?u32 = null;
     var net_path: []const u8 = "";
     var fen: []const u8 = position.START_FEN;
+    var coaching = false;
     while (p.next()) |a| {
         if (std.mem.eql(u8, a, "--black")) human = bb.BLACK
         else if (std.mem.eql(u8, a, "--white")) human = bb.WHITE
@@ -157,6 +160,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         else if (p.int(u32, a, "--elo")) |v| elo = std.math.clamp(v, strength.MIN_ELO, strength.MAX_ELO)
         else if (p.flag(a, "--net")) |v| net_path = v
         else if (p.flag(a, "--fen")) |v| fen = v
+        else if (std.mem.eql(u8, a, "--coach")) coaching = true
         else {
             out.print("{s}", .{help});
             return;
@@ -273,6 +277,12 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         try history.append(gpa, pos);
         try keys.append(gpa, pos.key);
         try moves.append(gpa, move);
+        if (coaching and pos.side == human) {
+            var cb: [1024]u8 = undefined;
+            var w: Io.Writer = .fixed(&cb);
+            coach.comment(engine, &pos, move, keys.items, &w) catch {};
+            out.print("coach: {s}\n", .{w.buffered()});
+        }
         pos = pos.makeMove(move);
         last = move;
     }

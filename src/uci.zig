@@ -12,6 +12,7 @@ const hce = @import("eval.zig");
 const TT = @import("tt.zig").TT;
 const Output = @import("output.zig").Output;
 const strength = @import("strength.zig");
+const coach = @import("coach.zig");
 
 const Position = position.Position;
 const Move = position.Move;
@@ -42,10 +43,26 @@ pub const Engine = struct {
     stop: std.atomic.Value(bool) = .init(false),
     searchers: std.ArrayList(*search.Searcher) = .empty,
     search_thread: ?std.Thread = null,
+    /// The position before the last move of the `position` command, and that move.
+    prev_pos: Position = undefined,
+    last_move: Move = Move.none,
+    /// Coach / CoachLog (see coach.zig): comment on the opponent's moves.
+    coach_on: bool = false,
+    coach_log: std.ArrayList(u8) = .empty,
+    coach_searcher: ?*search.Searcher = null,
+    coach_stop: std.atomic.Value(bool) = .init(false),
+    /// Set by `go` when this search should be followed by a comment.
+    coach_pending: bool = false,
+    coach_new_game: bool = true,
+    /// Last position + move commented on, so a repeated `go` isn't logged twice.
+    coach_last: u64 = 0,
 
-    pub fn init(gpa: std.mem.Allocator, io: Io, out: *Output) !*Engine {
+    /// `home` is where the coaching log goes by default.
+    pub fn init(gpa: std.mem.Allocator, io: Io, out: *Output, home: ?[]const u8) !*Engine {
         const e = try gpa.create(Engine);
         e.* = .{ .gpa = gpa, .io = io, .out = out, .pos = Position.startpos(), .tt = try TT.init(gpa, 64) };
+        if (home) |h| try e.coach_log.print(gpa, "{s}/", .{h});
+        try e.coach_log.appendSlice(gpa, "zchess-coach.log");
         e.net = try nnue.loadEmbedded(gpa);
         e.prng = std.Random.DefaultPrng.init(@truncate(@as(u96, @bitCast(Io.Clock.real.now(io).toNanoseconds()))));
         try e.setThreads(1);
@@ -59,6 +76,8 @@ pub const Engine = struct {
     fn setThreads(e: *Engine, n: usize) !void {
         for (e.searchers.items) |s| e.gpa.destroy(s);
         e.searchers.clearRetainingCapacity();
+        if (e.coach_searcher) |c| e.gpa.destroy(c);
+        e.coach_searcher = null;
         for (0..@max(n, 1)) |_| try e.searchers.append(e.gpa, try search.Searcher.create(e.gpa, e.io, &e.tt, e.activeNet(), &e.stop));
         for (e.searchers.items) |s| s.peers = e.searchers.items;
         e.searchers.items[0].out = e.out;
@@ -74,6 +93,7 @@ pub const Engine = struct {
     }
 
     fn think(e: *Engine, limits: search.Limits) void {
+        defer e.coachMove();
         e.tt.newSearch();
         const main = e.searchers.items[0];
         if (e.limit_strength) return e.thinkLimited(main, limits);
@@ -127,6 +147,50 @@ pub const Engine = struct {
         _ = s.search(limits);
     }
 
+    /// Coach: judges the opponent's last move and writes the comment to the
+    /// log and as an info string. Runs after bestmove, so it doesn't use the
+    /// engine's clock; skipped after a ponder miss (that move wasn't played).
+    fn coachMove(e: *Engine) void {
+        if (!e.coach_pending) return;
+        e.coach_pending = false;
+        if (e.pondering.load(.monotonic)) return;
+        const id = e.prev_pos.key ^ @as(u64, e.last_move.data) *% 0x9E3779B97F4A7C15;
+        if (id == e.coach_last) return;
+        e.coach_last = id;
+        const s = e.coach_searcher orelse blk: {
+            const c = search.Searcher.create(e.gpa, e.io, &e.tt, e.activeNet(), &e.coach_stop) catch return;
+            e.coach_searcher = c;
+            break :blk c;
+        };
+        var buf: [1024]u8 = undefined;
+        var w: Io.Writer = .fixed(&buf);
+        coach.comment(s, &e.prev_pos, e.last_move, e.game_keys.items, &w) catch return;
+        if (e.coach_stop.load(.monotonic)) return;
+        e.out.print("info string coach: {s}\n", .{w.buffered()});
+        e.appendCoachLog(w.buffered());
+    }
+
+    fn appendCoachLog(e: *Engine, text: []const u8) void {
+        const path = e.coach_log.items;
+        if (path.len == 0) return;
+        const f = Io.Dir.cwd().createFile(e.io, path, .{ .truncate = false }) catch |err| {
+            e.out.print("info string coach: can't write {s}: {s}\n", .{ path, @errorName(err) });
+            return;
+        };
+        defer f.close(e.io);
+        const len = f.length(e.io) catch return;
+        var buf: [2048]u8 = undefined;
+        var fw = f.writer(e.io, &buf);
+        fw.seekTo(len) catch return;
+        const w = &fw.interface;
+        if (e.coach_new_game) {
+            coach.writeHeader(w, e.io, e.prev_pos.side) catch return;
+            e.coach_new_game = false;
+        }
+        w.print("{s}\n", .{text}) catch return;
+        w.flush() catch {};
+    }
+
     fn setPositionCmd(e: *Engine, args: []const u8) void {
         var it = std.mem.tokenizeScalar(u8, args, ' ');
         const kind = it.next() orelse return;
@@ -151,6 +215,7 @@ pub const Engine = struct {
         } else return;
 
         e.game_keys.clearRetainingCapacity();
+        e.last_move = Move.none;
         if (it.next()) |tok| {
             if (std.mem.eql(u8, tok, "moves")) {
                 while (it.next()) |mv| {
@@ -159,6 +224,8 @@ pub const Engine = struct {
                         break;
                     };
                     e.game_keys.append(e.gpa, pos.key) catch {};
+                    e.prev_pos = pos;
+                    e.last_move = m;
                     pos = pos.makeMove(m);
                 }
             }
@@ -175,6 +242,7 @@ pub const Engine = struct {
         var movestogo: i64 = 0;
         var movetime: i64 = 0;
         var ponder = false;
+        var infinite = false;
         var it = std.mem.tokenizeScalar(u8, args, ' ');
         while (it.next()) |tok| {
             const v: i64 = if (it.peek()) |p| std.fmt.parseInt(i64, p, 10) catch 0 else 0;
@@ -194,6 +262,8 @@ pub const Engine = struct {
                 limits.depth = @intCast(std.math.clamp(v, 1, search.MAX_PLY - 1));
             } else if (std.mem.eql(u8, tok, "ponder")) {
                 ponder = true;
+            } else if (std.mem.eql(u8, tok, "infinite")) {
+                infinite = true;
             } else if (std.mem.eql(u8, tok, "nodes")) {
                 limits.nodes = @intCast(@max(v, 1));
             }
@@ -215,6 +285,8 @@ pub const Engine = struct {
         e.stop.store(false, .monotonic);
         e.stop_cmd.store(false, .monotonic);
         e.pondering.store(ponder, .monotonic);
+        // Analysis (go infinite) isn't a game: no coaching.
+        e.coach_pending = e.coach_on and !infinite and e.last_move.data != 0;
         e.search_thread = std.Thread.spawn(.{}, think, .{ e, limits }) catch {
             e.out.print("info string failed to start search\n", .{});
             return;
@@ -259,6 +331,11 @@ pub const Engine = struct {
         } else if (std.ascii.eqlIgnoreCase(name, "MultiPV")) {
             e.multipv = std.math.clamp(std.fmt.parseInt(usize, value, 10) catch 1, 1, search.MAX_MULTIPV);
             e.searchers.items[0].multipv = e.multipv;
+        } else if (std.ascii.eqlIgnoreCase(name, "Coach")) {
+            e.coach_on = std.ascii.eqlIgnoreCase(value, "true");
+        } else if (std.ascii.eqlIgnoreCase(name, "CoachLog")) {
+            e.coach_log.clearRetainingCapacity();
+            if (!std.mem.eql(u8, value, "<none>")) try e.coach_log.appendSlice(e.gpa, value);
         } else if (std.ascii.eqlIgnoreCase(name, "UseNNUE")) {
             e.use_nnue = std.ascii.eqlIgnoreCase(value, "true");
             try e.setThreads(e.searchers.items.len);
@@ -273,6 +350,7 @@ pub const Engine = struct {
             if (!try e.command(line)) break;
         }
         e.stop.store(true, .monotonic);
+        e.coach_stop.store(true, .monotonic);
         e.waitSearch();
     }
 
@@ -294,6 +372,8 @@ pub const Engine = struct {
             e.out.print("option name Clear Hash type button\n", .{});
             e.out.print("option name UCI_LimitStrength type check default false\n", .{});
             e.out.print("option name UCI_Elo type spin default 1500 min {d} max {d}\n", .{ strength.MIN_ELO, strength.MAX_ELO });
+            e.out.print("option name Coach type check default false\n", .{});
+            e.out.print("option name CoachLog type string default {s}\n", .{if (e.coach_log.items.len > 0) e.coach_log.items else "<none>"});
             e.out.print("uciok\n", .{});
         } else if (std.mem.eql(u8, cmd, "isready")) {
             e.out.print("readyok\n", .{});
@@ -301,6 +381,9 @@ pub const Engine = struct {
             e.waitSearch();
             e.tt.clear();
             for (e.searchers.items) |s| s.clearHistory();
+            if (e.coach_searcher) |c| c.clearHistory();
+            e.coach_new_game = true;
+            e.coach_last = 0;
         } else if (std.mem.eql(u8, cmd, "position")) {
             e.waitSearch();
             e.setPositionCmd(args);
