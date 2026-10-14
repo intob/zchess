@@ -222,7 +222,9 @@ automatic promotion.
 
 **gen7w-p25-e30 promoted** (`nets/best.txt`, 2026-10-13): about +87 over gen6w in
 self-play SPRTs (+32.6, +44.1, +10.5). Recipe for the next generation: loss power 2.5,
-30 epochs. Gauntlet vs Stockfish on bitch-box for its rating: running.
+30 epochs. Gauntlet vs Stockfish 19 on bitch-box (10+0.1, 200 games per level):
+2800 +263 ± 57, 3000 +117 ± 40, 3190 −24 ± 37, so **3115** in `nets/ratings.txt`
+(gen6w 3070: +45 against Stockfish, about half the self-play gain, as usual).
 
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
