@@ -19,12 +19,13 @@ const Move = position.Move;
 
 const help =
     \\usage: zchess play [--black] [--time <seconds>] [--elo <100-3000>] [--net <file|hce>] [--fen <fen>]
-    \\                   [--coach [--games <pgn file or dir> [--user <name>]]]
+    \\                   [--coach [--games <pgn file or dir> [--user <name>]] [--threats]]
     \\
     \\Enter moves as SAN (e4, Nf3, exd5, O-O, e8=Q) or coordinates (e2e4).
     \\Commands: moves, undo, flip, hint, help, quit
     \\--coach: a comment on each of your moves, judged as `zchess review` would, with
-    \\opening names and theory; --games adds your record from your own games.
+    \\opening names and theory; --games adds your record from your own games;
+    \\--threats also says what each engine move threatens.
     \\
 ;
 
@@ -156,6 +157,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var net_path: []const u8 = "";
     var fen: []const u8 = position.START_FEN;
     var coaching = false;
+    var threats = false;
     var games_path: []const u8 = "";
     var user: []const u8 = "";
     while (p.next()) |a| {
@@ -166,6 +168,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         else if (p.flag(a, "--net")) |v| net_path = v
         else if (p.flag(a, "--fen")) |v| fen = v
         else if (std.mem.eql(u8, a, "--coach")) coaching = true
+        else if (std.mem.eql(u8, a, "--threats")) threats = true
         else if (p.flag(a, "--games")) |v| games_path = v
         else if (p.flag(a, "--user")) |v| user = v
         else {
@@ -301,6 +304,11 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
             var cb: [2048]u8 = undefined;
             var w: Io.Writer = .fixed(&cb);
             coach.comment(engine, &coach_ctx, &pos, move, keys.items, &w) catch {};
+            out.print("coach: {s}\n", .{w.buffered()});
+        } else if (coaching and threats) {
+            var cb: [1024]u8 = undefined;
+            var w: Io.Writer = .fixed(&cb);
+            coach.opponent(engine, &coach_ctx, &pos, move, keys.items, &w) catch {};
             out.print("coach: {s}\n", .{w.buffered()});
         }
         pos = pos.makeMove(move);

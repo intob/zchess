@@ -155,7 +155,7 @@ fn phaseOf(pos: *const Position, ply: usize) []const u8 {
     return if (npm <= 8) "endgame" else "middlegame";
 }
 
-fn victimOf(pos: *const Position, m: Move) ?bb.PieceType {
+pub fn victimOf(pos: *const Position, m: Move) ?bb.PieceType {
     if (m.flag() == Move.EP_CAPTURE) return bb.PAWN;
     if (!m.isCapture()) return null;
     return bb.pieceType(pos.board[m.to()]);

@@ -49,6 +49,9 @@ pub const Engine = struct {
     last_move: Move = Move.none,
     /// Coach / CoachLog (see coach.zig): comment on the opponent's moves.
     coach_on: bool = false,
+    /// CoachOpponent: also comment on the engine's own moves (threats).
+    coach_opp: bool = false,
+    coach_opp_pending: bool = false,
     coach_log: std.ArrayList(u8) = .empty,
     coach_searcher: ?*search.Searcher = null,
     coach_stop: std.atomic.Value(bool) = .init(false),
@@ -134,6 +137,7 @@ pub const Engine = struct {
         e.stop.store(true, .monotonic);
         for (helpers[0 .. e.searchers.items.len - 1]) |h| if (h) |t| t.join();
         e.finishCoach();
+        e.coachOpponent(r.move);
         var buf: [5]u8 = undefined;
         var pbuf: [5]u8 = undefined;
         // Expected reply, so the GUI can ponder on it during the opponent's time.
@@ -154,6 +158,7 @@ pub const Engine = struct {
             e.io.sleep(.fromMilliseconds(2), .awake) catch {};
         }
         e.finishCoach();
+        e.coachOpponent(c.result.move);
         var buf: [5]u8 = undefined;
         var pbuf: [5]u8 = undefined;
         if (main.n_lines > c.line and main.lines[c.line].pv_len >= 2) {
@@ -178,15 +183,33 @@ pub const Engine = struct {
         const id = e.prev_pos.key ^ @as(u64, e.last_move.data) *% 0x9E3779B97F4A7C15;
         if (id == e.coach_last) return;
         e.coach_last = id;
-        const s = e.coach_searcher orelse blk: {
-            const c = search.Searcher.create(e.gpa, e.io, &e.tt, e.activeNet(), &e.coach_stop) catch return;
-            e.coach_searcher = c;
-            break :blk c;
-        };
+        const s = e.coachSearcher() orelse return;
         e.coach_len = 0;
         e.coach_ready.store(false, .seq_cst);
         e.coach_sent.store(false, .seq_cst);
         e.coach_thread = std.Thread.spawn(.{}, coachMain, .{ e, s }) catch null;
+    }
+
+    fn coachSearcher(e: *Engine) ?*search.Searcher {
+        if (e.coach_searcher == null) e.coach_searcher = search.Searcher.create(e.gpa, e.io, &e.tt, e.activeNet(), &e.coach_stop) catch null;
+        return e.coach_searcher;
+    }
+
+    /// CoachOpponent: what the engine's own move threatens, sent just before
+    /// bestmove so that it arrives with the move. Not after a ponder miss.
+    fn coachOpponent(e: *Engine, move: Move) void {
+        if (!e.coach_opp_pending) return;
+        e.coach_opp_pending = false;
+        if (e.pondering.load(.monotonic) or move.data == 0 or e.coach_stop.load(.monotonic)) return;
+        const s = e.coachSearcher() orelse return;
+        e.game_keys.append(e.gpa, e.pos.key) catch return;
+        defer _ = e.game_keys.pop();
+        var buf: [1024]u8 = undefined;
+        var w: Io.Writer = .fixed(&buf);
+        coach.opponent(s, &e.coach_ctx, &e.pos, move, e.game_keys.items, &w) catch return;
+        if (e.coach_stop.load(.monotonic)) return;
+        e.out.print("info string coach: {s}\n", .{w.buffered()});
+        e.appendCoachLog(w.buffered(), e.pos.side ^ 1);
     }
 
     fn coachMain(e: *Engine, s: *search.Searcher) void {
@@ -203,7 +226,7 @@ pub const Engine = struct {
         if (e.coach_sent.swap(true, .seq_cst)) return;
         const text = e.coach_buf[0..e.coach_len];
         e.out.print("info string coach: {s}\n", .{text});
-        e.appendCoachLog(text);
+        e.appendCoachLog(text, e.prev_pos.side);
     }
 
     fn loadRepertoire(e: *Engine) void {
@@ -244,7 +267,8 @@ pub const Engine = struct {
         e.sendCoach();
     }
 
-    fn appendCoachLog(e: *Engine, text: []const u8) void {
+    /// `user` is the coached side, for a new game's header.
+    fn appendCoachLog(e: *Engine, text: []const u8, user: bb.Color) void {
         const path = e.coach_log.items;
         if (path.len == 0) return;
         const f = Io.Dir.cwd().createFile(e.io, path, .{ .truncate = false }) catch |err| {
@@ -258,7 +282,7 @@ pub const Engine = struct {
         fw.seekTo(len) catch return;
         const w = &fw.interface;
         if (e.coach_new_game) {
-            coach.writeHeader(w, e.io, e.prev_pos.side) catch return;
+            coach.writeHeader(w, e.io, user) catch return;
             e.coach_new_game = false;
         }
         w.print("{s}\n", .{text}) catch return;
@@ -363,6 +387,7 @@ pub const Engine = struct {
         // is too little to share with the coach.
         const hurried = limits.hard_ms > 0 and limits.hard_ms < 1000;
         e.coach_pending = e.coach_on and !infinite and !hurried and e.last_move.data != 0;
+        e.coach_opp_pending = e.coach_on and e.coach_opp and !infinite and !hurried;
         e.search_thread = std.Thread.spawn(.{}, think, .{ e, limits }) catch {
             e.out.print("info string failed to start search\n", .{});
             return;
@@ -409,6 +434,8 @@ pub const Engine = struct {
             e.searchers.items[0].multipv = e.multipv;
         } else if (std.ascii.eqlIgnoreCase(name, "Coach")) {
             e.coach_on = std.ascii.eqlIgnoreCase(value, "true");
+        } else if (std.ascii.eqlIgnoreCase(name, "CoachOpponent")) {
+            e.coach_opp = std.ascii.eqlIgnoreCase(value, "true");
         } else if (std.ascii.eqlIgnoreCase(name, "CoachGames")) {
             e.coach_games.clearRetainingCapacity();
             if (!std.mem.eql(u8, value, "<none>")) try e.coach_games.appendSlice(e.gpa, value);
@@ -457,6 +484,7 @@ pub const Engine = struct {
             e.out.print("option name UCI_LimitStrength type check default false\n", .{});
             e.out.print("option name UCI_Elo type spin default 1500 min {d} max {d}\n", .{ strength.MIN_ELO, strength.MAX_ELO });
             e.out.print("option name Coach type check default false\n", .{});
+            e.out.print("option name CoachOpponent type check default false\n", .{});
             e.out.print("option name CoachLog type string default {s}\n", .{if (e.coach_log.items.len > 0) e.coach_log.items else "<none>"});
             e.out.print("option name CoachGames type string default {s}\n", .{if (e.coach_games.items.len > 0) e.coach_games.items else "<none>"});
             e.out.print("option name CoachUser type string default <auto>\n", .{});

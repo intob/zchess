@@ -31,7 +31,7 @@ UCI options: `Hash`, `Threads`, `EvalFile` (path to a `.nnue`), `UseNNUE`, `Mult
 `Ponder`, `Move Overhead`, `Clear Hash`, and `UCI_LimitStrength` + `UCI_Elo` (100–3000:
 smaller search, more candidate moves and a weighted random pick at lower ratings;
 `zchess play --elo N` does the same in the terminal).
-`Coach`, `CoachLog`, `CoachGames`, `CoachUser`: a comment on each of your moves (see Game review).
+`Coach`, `CoachOpponent`, `CoachLog`, `CoachGames`, `CoachUser`: a comment on each of your moves (see Game review).
 Extra commands in UCI mode: `d` (show the board), `eval`, `perft <depth>`.
 
 ## Training pipeline
@@ -145,6 +145,14 @@ undeveloped pieces, uncastled king) when the engine also flags the move, and how
 have done from the position in your own games:
 
     3. Bc4: good. Nc3 was also strong. Opening: Italian Game (C50). Book move: played in 30% of 49241 games between 2000+ players. Eval: +0.07
+
+With `CoachOpponent` on, the engine's own moves get a comment too, just before its
+`bestmove` (two 150k-node searches): opening name and theory, what it took, and what it
+threatens, found by letting it move twice (a null move) and seeing what that wins:
+
+    Opponent played 6. Qh5. Threatens mate: Qxf7#. Eval: +0.34
+
+In the terminal: `zchess play --coach --threats`.
 
 Your games come from `CoachGames` (a PGN file or a folder of them; default
 `~/Documents/EnCroissant/zchess`, where `scripts/ec-sync.py` puts them, re-read every

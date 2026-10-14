@@ -13,6 +13,7 @@ const position = @import("position.zig");
 const search = @import("search.zig");
 const review = @import("review.zig");
 const play = @import("play.zig");
+const movegen = @import("movegen.zig");
 const openings = @import("openings.zig");
 
 const Position = position.Position;
@@ -115,6 +116,67 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
     try w.writeAll(" Eval: ");
     try writeScore(w, -ea.score);
 }
+
+/// Search effort for each of the two searches of an opponent comment.
+pub const THREAT_NODES = 150_000;
+
+/// A threat counts when passing would cost the user this much (centipawns).
+const THREAT_MARGIN = 150;
+
+/// Comment on the opponent's `move`, played in `before`: opening name and
+/// theory, what it captures or checks, and what it threatens (the best
+/// move the opponent would have if the user passed). `keys` are the
+/// positions of the game up to and including `before`.
+pub fn opponent(s: *search.Searcher, ctx: *Context, before: *const Position, move: Move, keys: []const u64, w: *Io.Writer) !void {
+    const after = before.makeMove(move);
+    var sb: [16]u8 = undefined;
+    try w.print("Opponent played {d}{s} {s}.", .{ before.fullmove, if (before.side == bb.WHITE) "." else "...", play.san(before, move, &sb) });
+    if (ctx.book) |*book| {
+        try writeOpeningName(w, book, ctx, after.key, keys);
+        try writeTheory(w, book, before, move);
+    }
+    if (review.victimOf(before, move)) |v| try w.print(" It takes your {s}.", .{review.piece_names[v]});
+    var replies = movegen.MoveList{};
+    movegen.generate(&after, &replies, .all);
+    if (replies.len == 0) return w.writeAll(if (after.inCheck()) " Checkmate." else " Stalemate.");
+
+    // The user's view of the position, and the opponent's if the user passed.
+    var with_after: [MAX_KEYS]u64 = undefined;
+    const n = @min(keys.len, MAX_KEYS - 1);
+    @memcpy(with_after[0..n], keys[keys.len - n ..]);
+    with_after[n] = after.key;
+    const ea = review.evalPosition(s, &after, keys, THREAT_NODES);
+    if (after.inCheck()) {
+        try w.writeAll(" Check!");
+        if (ea.score <= -search.MATE_BOUND) try w.writeAll(" It leads to a forced mate.");
+    } else {
+        const null_pos = after.makeNull();
+        const et = review.evalPosition(s, &null_pos, with_after[0 .. n + 1], THREAT_NODES);
+        // et.score: the opponent's view if the user passed; -ea.score: their view now.
+        if (et.score >= search.MATE_BOUND and -ea.score < search.MATE_BOUND) {
+            try w.writeAll(" Threatens mate: ");
+            try writeLine(w, null_pos, et.pv[0..et.pv_len]);
+            try w.writeByte('.');
+        } else if (et.best.data != 0 and et.score - (-ea.score) >= THREAT_MARGIN) {
+            var tb: [16]u8 = undefined;
+            const threat = play.san(&null_pos, et.best, &tb);
+            if (review.victimOf(&null_pos, et.best)) |v| {
+                try w.print(" Threatens {s}, winning your {s}.", .{ threat, review.piece_names[v] });
+            } else {
+                try w.print(" Threatens {s} (", .{threat});
+                try writeLine(w, null_pos, et.pv[0..et.pv_len]);
+                try w.writeAll(").");
+            }
+        } else {
+            try w.writeAll(" No direct threat.");
+        }
+    }
+    try w.writeAll(" Eval: ");
+    try writeScore(w, ea.score);
+}
+
+/// Game history kept for an opponent comment's searches.
+const MAX_KEYS = 512;
 
 /// The opening's name when it has changed since the last one announced: the
 /// latest named position of the game, so transpositions count.
