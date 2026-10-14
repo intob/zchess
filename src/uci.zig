@@ -55,6 +55,10 @@ pub const Engine = struct {
     coach_thread: ?std.Thread = null,
     coach_buf: [2048]u8 = undefined,
     coach_len: usize = 0,
+    /// The comment is written (ready) and has gone out (sent): by the coach
+    /// thread, by ponderhit, or before bestmove, whichever comes first.
+    coach_ready: std.atomic.Value(bool) = .init(false),
+    coach_sent: std.atomic.Value(bool) = .init(false),
     /// Opening book (embedded) and the user's record from CoachGames / CoachUser,
     /// re-read for each new game so newly synced games count.
     coach_ctx: coach.Context = .{},
@@ -164,8 +168,10 @@ pub const Engine = struct {
     }
 
     /// Coach: judges the opponent's last move on its own thread while the
-    /// engine thinks. finishCoach sends the comment just before bestmove, as
-    /// GUIs such as En Croissant only read engine output while waiting for it.
+    /// engine thinks, and sends the comment as soon as it's ready: GUIs such
+    /// as En Croissant only read engine output while waiting for bestmove,
+    /// and a full-strength reply can take a while. When pondering, it waits
+    /// for ponderhit (finishCoach), as the move may not be played.
     fn startCoach(e: *Engine) void {
         if (!e.coach_pending) return;
         e.coach_pending = false;
@@ -178,6 +184,8 @@ pub const Engine = struct {
             break :blk c;
         };
         e.coach_len = 0;
+        e.coach_ready.store(false, .seq_cst);
+        e.coach_sent.store(false, .seq_cst);
         e.coach_thread = std.Thread.spawn(.{}, coachMain, .{ e, s }) catch null;
     }
 
@@ -186,6 +194,16 @@ pub const Engine = struct {
         var w: Io.Writer = .fixed(&e.coach_buf);
         coach.comment(s, &e.coach_ctx, &e.prev_pos, e.last_move, e.game_keys.items, &w) catch return;
         e.coach_len = w.buffered().len;
+        e.coach_ready.store(true, .seq_cst);
+        if (!e.pondering.load(.seq_cst) and !e.coach_stop.load(.monotonic)) e.sendCoach();
+    }
+
+    /// Sends the comment unless it has already gone out.
+    fn sendCoach(e: *Engine) void {
+        if (e.coach_sent.swap(true, .seq_cst)) return;
+        const text = e.coach_buf[0..e.coach_len];
+        e.out.print("info string coach: {s}\n", .{text});
+        e.appendCoachLog(text);
     }
 
     fn loadRepertoire(e: *Engine) void {
@@ -208,8 +226,9 @@ pub const Engine = struct {
         e.out.print("info string coach: {d} of your games as {s} from {s}\n", .{ r.games, r.user(), e.coach_games.items });
     }
 
-    /// Waits for the comment and sends it to the GUI and the log; dropped
-    /// after a ponder miss (that move wasn't played) or on quit.
+    /// Waits for the coach before bestmove, and sends a comment held back
+    /// while pondering; dropped after a ponder miss (that move wasn't played)
+    /// or on quit.
     fn finishCoach(e: *Engine) void {
         const t = e.coach_thread orelse return;
         e.coach_thread = null;
@@ -217,13 +236,12 @@ pub const Engine = struct {
         if (missed) e.coach_stop.store(true, .monotonic);
         t.join();
         if (missed) {
+            e.coach_sent.store(true, .seq_cst); // dropped: nothing left to send
             e.coach_stop.store(false, .monotonic);
             return;
         }
         if (e.coach_stop.load(.monotonic) or e.coach_len == 0) return;
-        const text = e.coach_buf[0..e.coach_len];
-        e.out.print("info string coach: {s}\n", .{text});
-        e.appendCoachLog(text);
+        e.sendCoach();
     }
 
     fn appendCoachLog(e: *Engine, text: []const u8) void {
@@ -465,6 +483,8 @@ pub const Engine = struct {
             e.waitSearch();
         } else if (std.mem.eql(u8, cmd, "ponderhit")) {
             e.searchers.items[0].ponderhit();
+            // The guessed move was played: a comment held back can go now.
+            if (e.coach_ready.load(.seq_cst)) e.sendCoach();
         } else if (std.mem.eql(u8, cmd, "setoption")) {
             e.waitSearch();
             try e.setOption(args);
