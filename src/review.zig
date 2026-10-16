@@ -133,14 +133,35 @@ pub fn evalPosition(s: *search.Searcher, p: *const Position, keys: []const u64, 
     return e;
 }
 
-pub const Grade = struct { drop: f64, cls: Class };
+/// `by_eval`: the class comes from the eval drop, not the winning chances.
+pub const Grade = struct { drop: f64, cls: Class, by_eval: bool = false };
+
+/// Eval thrown away (centipawns) that is a mistake or a blunder however far
+/// ahead or behind the mover is: there the winning chances hardly move (a
+/// queen hung at +16 costs about 4%), but it's still a piece left hanging.
+const MISTAKE_CP = 300;
+const BLUNDER_CP = 600;
 
 /// How much a move cost the mover in winning chances, from the scores before
 /// it (mover's view) and after it (opponent's view).
 pub fn grade(before: i32, after_opp: i32) Grade {
     const drop = @max(0, winPct(before) - winPct(-after_opp));
     const cls: Class = if (drop >= 30) .blunder else if (drop >= 20) .mistake else if (drop >= 10) .inaccuracy else .good;
+    if (@abs(before) < search.MATE_BOUND and @abs(after_opp) < search.MATE_BOUND) {
+        const loss = before + after_opp;
+        const by: Class = if (loss >= BLUNDER_CP) .blunder else if (loss >= MISTAKE_CP) .mistake else .good;
+        if (@intFromEnum(by) > @intFromEnum(cls)) return .{ .drop = drop, .cls = by, .by_eval = true };
+    }
     return .{ .drop = drop, .cls = cls };
+}
+
+test "grade: a hung queen far ahead is still a blunder" {
+    // 18. Bd4?? leaving the queen to Nxa7: +16.80 -> +8.45.
+    const g = grade(1680, -845);
+    try std.testing.expect(g.cls == .blunder and g.by_eval);
+    try std.testing.expect(grade(1680, -1550).cls == .good);
+    try std.testing.expect(grade(200, -100).cls == .good);
+    try std.testing.expect(grade(150, 250).cls == .blunder and !grade(150, 250).by_eval);
 }
 
 const Flag = struct {

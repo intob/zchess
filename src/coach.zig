@@ -139,7 +139,7 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
         const evals = [2]review.Eval{ eb, ea };
         label = review.classifyKind(&positions, &evals, &.{move}, 0);
         var xb: [192]u8 = undefined;
-        try w.print("{s} {s}: {s} (win chance {d:.0}% -> {d:.0}%). Better was {s}", .{
+        try w.print("{s} {s}: {s} (", .{
             switch (g.cls) {
                 .inaccuracy => "?!",
                 .mistake => "?",
@@ -151,10 +151,17 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
                 else => "Blunder",
             },
             review.explain(label, best, reply, &xb),
-            review.winPct(eb.score),
-            review.winPct(-ea.score),
-            best,
         });
+        // Far ahead or behind the winning chances barely move; show the eval.
+        if (g.by_eval) {
+            try w.writeAll("eval ");
+            try writeScore(w, eb.score);
+            try w.writeAll(" -> ");
+            try writeScore(w, -ea.score);
+        } else {
+            try w.print("win chance {d:.0}% -> {d:.0}%", .{ review.winPct(eb.score), review.winPct(-ea.score) });
+        }
+        try w.print("). Better was {s}", .{best});
         if (eb.pv_len > 1) {
             try w.writeAll(" (");
             try writeLine(w, before.*, eb.pv[0..eb.pv_len]);
