@@ -6,15 +6,25 @@
 //! closely (En Croissant is GPL-3.0, and so is this tool). Used by
 //! scripts/ec-sync.py for the games played against zchess.
 //!
+//! `ec-db export` goes the other way: the mainlines of a database's games as
+//! PGN on stdout (only what an opening book needs: ratings, result, the
+//! first moves), e.g. for `zchess openings` from Lumbra's Gigabase.
+//!
 //! usage: ec-db <database.db3> --title <title> [--description <text>] <games.pgn>...
+//!        ec-db export <database.db3> [--min-elo <n>] [--plies <n>] > games.pgn
 
 use pgn_reader::{BufferedReader, Nag, RawComment, RawHeader, SanPlus, Skip, Visitor};
 use rusqlite::{params, Connection};
 use shakmaty::{
-    fen::Fen, Board, ByColor, CastlingMode, Chess, FromSetup, Move, Piece, Position,
+    fen::Fen, san::San, Board, ByColor, CastlingMode, Chess, FromSetup, Move, Piece, Position,
     PositionError,
 };
-use std::{fs::File, path::PathBuf, process::ExitCode};
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 const DATABASE_VERSION: &str = "1.0.0";
 
@@ -298,8 +308,76 @@ impl Visitor for Importer {
     }
 }
 
+/// The first `plies` mainline moves of an encoded game, in SAN.
+fn decode_mainline(bytes: &[u8], plies: usize, out: &mut String) {
+    let mut pos = Chess::default();
+    let (mut i, mut depth, mut n) = (0, 0usize, 0);
+    while i < bytes.len() && n < plies {
+        let b = bytes[i];
+        i += 1;
+        match b {
+            VARIATION_START_MARKER => depth += 1,
+            VARIATION_END_MARKER => depth = depth.saturating_sub(1),
+            COMMENT_MARKER | NAG_MARKER => {
+                if i + 2 > bytes.len() {
+                    return;
+                }
+                let len = u16::from_le_bytes([bytes[i], bytes[i + 1]]) as usize;
+                i = (i + 2 + len).min(bytes.len());
+            }
+            _ if depth == 0 => {
+                let Some(m) = pos.legal_moves().get(b as usize).cloned() else { return };
+                if n % 2 == 0 {
+                    out.push_str(&format!("{}. ", n / 2 + 1));
+                }
+                out.push_str(&San::from_move(&pos, &m).to_string());
+                out.push(' ');
+                pos.play_unchecked(&m);
+                n += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn export(mut args: impl Iterator<Item = String>) -> Result<usize, Box<dyn std::error::Error>> {
+    let usage = "usage: ec-db export <database.db3> [--min-elo <n>] [--plies <n>]";
+    let (mut db_path, mut min_elo, mut plies) = (None, 0i64, 40usize);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--min-elo" => min_elo = args.next().ok_or(usage)?.parse()?,
+            "--plies" => plies = args.next().ok_or(usage)?.parse()?,
+            _ if db_path.is_none() => db_path = Some(PathBuf::from(a)),
+            _ => return Err(usage.into()),
+        }
+    }
+    let db = Connection::open_with_flags(db_path.ok_or(usage)?, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut stmt = db.prepare(
+        "SELECT WhiteElo, BlackElo, Result, Moves FROM Games
+         WHERE FEN IS NULL AND WhiteElo >= ?1 AND BlackElo >= ?1 AND Result IN ('1-0', '0-1', '1/2-1/2')",
+    )?;
+    let mut rows = stmt.query(params![min_elo])?;
+    let mut out = BufWriter::with_capacity(1 << 20, std::io::stdout().lock());
+    let mut text = String::new();
+    let mut n = 0;
+    while let Some(row) = rows.next()? {
+        let (we, be, res): (i64, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
+        let moves: Vec<u8> = row.get(3)?;
+        text.clear();
+        decode_mainline(&moves, plies, &mut text);
+        write!(out, "[WhiteElo \"{we}\"]\n[BlackElo \"{be}\"]\n[Result \"{res}\"]\n\n{text}{res}\n\n")?;
+        n += 1;
+    }
+    out.flush()?;
+    Ok(n)
+}
+
 fn run() -> Result<usize, Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().map(String::as_str) == Some("export") {
+        args.next();
+        return export(args);
+    }
     let mut db_path: Option<PathBuf> = None;
     let (mut title, mut description) = (String::new(), String::new());
     let mut files = Vec::new();
@@ -351,7 +429,7 @@ fn run() -> Result<usize, Box<dyn std::error::Error>> {
 fn main() -> ExitCode {
     match run() {
         Ok(n) => {
-            println!("{n}");
+            eprintln!("ec-db: {n} games");
             ExitCode::SUCCESS
         }
         Err(e) => {

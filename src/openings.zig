@@ -26,6 +26,8 @@ const help =
     \\  --min-elo <n>      both players rated at least this (default 2000; 0 = any)
     \\  --plies <n>        depth of the move tree (default 30)
     \\  --min-games <n>    keep moves played in at least this many games (default 3)
+    \\  --min-position <n> keep positions reached in at least this many games (default 20:
+    \\                     the coach's MIN_THEORY; it ignores the moves of rarer ones)
     \\
 ;
 
@@ -230,6 +232,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var min_elo: u32 = 2000;
     var plies: usize = 30;
     var min_games: u32 = 3;
+    var min_position: u64 = 20;
     var inputs: std.ArrayList([]const u8) = .empty;
     defer inputs.deinit(gpa);
     while (p.next()) |a| {
@@ -238,6 +241,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         else if (p.int(u32, a, "--min-elo")) |v| min_elo = v
         else if (p.int(usize, a, "--plies")) |v| plies = @max(v, 1)
         else if (p.int(u32, a, "--min-games")) |v| min_games = @max(v, 1)
+        else if (p.int(u64, a, "--min-position")) |v| min_position = v
         else if (a[0] != '-') try inputs.append(gpa, a)
         else {
             out.print("{s}", .{help});
@@ -293,6 +297,23 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         if (c.white + c.draws + c.black >= min_games) try edges.append(gpa, .{ .key = e.key_ptr.*, .counts = c });
     }
     std.mem.sort(EdgeRec, edges.items, {}, edgeLess);
+    // Positions reached in too few games (counting the moves kept).
+    var kept: usize = 0;
+    var i: usize = 0;
+    while (i < edges.items.len) {
+        var j = i;
+        var total: u64 = 0;
+        while (j < edges.items.len and edges.items[j].key.key == edges.items[i].key.key) : (j += 1) {
+            const c = edges.items[j].counts;
+            total += c.white + c.draws + c.black;
+        }
+        if (total >= min_position) {
+            std.mem.copyForwards(EdgeRec, edges.items[kept..], edges.items[i..j]);
+            kept += j - i;
+        }
+        i = j;
+    }
+    edges.shrinkRetainingCapacity(kept);
 
     // Write.
     const of = try Io.Dir.cwd().createFile(io, out_path, .{});
@@ -322,8 +343,8 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     try w.flush();
 
     const ms = @max(t0.durationTo(Io.Clock.awake.now(io)).toMilliseconds(), 1);
-    out.print("\n{d} named positions; {d} of {d} games used, {d} moves (played in >= {d} games, first {d} plies) -> {s} ({d}s)\n", .{
-        names.items.len, b.used, b.games, edges.items.len, min_games, plies, out_path, @divTrunc(ms, 1000),
+    out.print("\n{d} named positions; {d} of {d} games used, {d} moves (played in >= {d} games, in positions reached in >= {d}, first {d} plies) -> {s} ({d}s)\n", .{
+        names.items.len, b.used, b.games, edges.items.len, min_games, min_position, plies, out_path, @divTrunc(ms, 1000),
     });
 }
 

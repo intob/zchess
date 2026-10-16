@@ -185,8 +185,9 @@ mistake of that same kind says so:
 In the opening the comment also names the opening when it changes (Lichess's
 [chess-openings](https://github.com/lichess-org/chess-openings) list, CC0, matched by
 position so transpositions count), says whether the move is theory (how often 2000+
-players chose it in the Lichess broadcast games, or what they play instead when it
-leaves the book), adds an opening-principle tip (early queen, same piece twice,
+players chose it in 5 million games: Lumbra's Gigabase, over-the-board games to mid
+2025, and the Lichess broadcasts since; or what they play instead when it leaves the
+book), adds an opening-principle tip (early queen, same piece twice,
 undeveloped pieces, uncastled king) when the engine also flags the move, and how you
 have done from the position in your own games:
 
@@ -228,10 +229,16 @@ byte (its index among the legal moves) matches; checked against En Croissant's i
 the Chess.com games, row for row.
 
 The names and the move tree are one file built by `zchess openings` and embedded by
-`zig build` when `data/openings.bin` exists (`-Dopenings=<file>` for another):
+`zig build` when `data/openings.bin` exists (`-Dopenings=<file>` for another). The
+games: Lumbra's Gigabase (in En Croissant's Databases, which `tools/ec-db export`
+turns back into PGN: 4.8M games with both players 2000+, in 40 s) and the Lichess
+broadcasts after it ends (June 2025), so no tournament counts twice. Only positions
+reached in 20+ games are kept (the coach's `MIN_THEORY`), about 360k of them, 25 MB:
 
-    zchess openings --names data/openings/a.tsv,...,data/openings/e.tsv \
-        --out data/openings.bin data/lichess/*.pgn.zst   # about a minute
+    tools/ec-db/target/release/ec-db export ~/Library/Application\ Support/org.encroissant.app/db/Lumbra\'s\ Gigabase.db3 \
+        --min-elo 2000 --plies 30 | zstd -T0 -6 -o data/lumbra/lumbra-2000.pgn.zst
+    zchess openings --names data/openings/a.tsv,...,data/openings/e.tsv --out data/openings.bin \
+        data/lumbra/lumbra-2000.pgn.zst data/lichess/lichess_db_broadcast_{2025-{07..12},2026-*}.pgn.zst   # 6 minutes
 
 ## Formats
 
