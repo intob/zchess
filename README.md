@@ -162,7 +162,9 @@ itself: a move you played is shown on the board and you say whether it is
 safe or loses something, then show how. Two in five are real mistakes; the
 rest are sound moves that still left a piece attacked (the review JSON's
 `checks`), so the answer takes counting attackers and defenders. Rounds of
-20, misses first next time.
+20, misses first next time. *Is the habit taking hold?* tracks it across games:
+pieces hung per game and the move of your first blunder (or none), each game and
+the average of the last 5, and your last 10 games against the 10 before.
 
 `scripts/ec-sync.py [--user fingjoey]` is the En Croissant bridge: it fetches new
 Chess.com games, reviews them and writes one annotated PGN per game into

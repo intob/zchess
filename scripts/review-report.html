@@ -1,4 +1,5 @@
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fingjoey Game Review</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,6 +19,7 @@
   --mistake: #d4761c;
   --inacc: #b8920f;
   --good: #23824f;
+  --dot: #5b6676;
   --sq-light: #dfe5ec;
   --sq-dark: #8597ad;
   --piece-white: #f8f8f4;
@@ -31,7 +33,7 @@
   :root:not([data-theme="light"]) {
     --paper: #11151b; --sheet: #181d25; --ink: #e5e9ef; --muted: #98a3b3; --line: #2a323e;
     --accent: #86a6ff; --accent-soft: rgba(134, 166, 255, .16);
-    --blunder: #ee6b5c; --mistake: #f0a050; --inacc: #e2c14f; --good: #5cc48a;
+    --blunder: #ee6b5c; --mistake: #f0a050; --inacc: #e2c14f; --good: #5cc48a; --dot: #6b7686;
     --sq-light: #a7b3c2; --sq-dark: #5b6b80; --piece-white: #f4f4ef; --piece-black: #1d2026; --piece-line: #0b0d10;
     color-scheme: dark;
   }
@@ -39,7 +41,7 @@
 :root[data-theme="dark"] {
   --paper: #11151b; --sheet: #181d25; --ink: #e5e9ef; --muted: #98a3b3; --line: #2a323e;
   --accent: #86a6ff; --accent-soft: rgba(134, 166, 255, .16);
-  --blunder: #ee6b5c; --mistake: #f0a050; --inacc: #e2c14f; --good: #5cc48a;
+  --blunder: #ee6b5c; --mistake: #f0a050; --inacc: #e2c14f; --good: #5cc48a; --dot: #6b7686;
   --sq-light: #a7b3c2; --sq-dark: #5b6b80; --piece-white: #f4f4ef; --piece-black: #1d2026; --piece-line: #0b0d10;
   color-scheme: dark;
 }
@@ -115,6 +117,24 @@ kbd { font: 500 11px var(--mono); border: 1px solid currentColor; border-radius:
 .phase-table th { font: 500 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .phase-table td.num, .phase-table th.r { text-align: right; }
 
+/* Progress */
+.progress-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+@media (max-width: 820px) { .progress-charts { grid-template-columns: minmax(0, 1fr); } }
+#progress-tiles { margin-top: 0; }
+.pchart { margin: 0; position: relative; display: grid; gap: 6px; }
+.pchart figcaption { font-weight: 600; font-size: 15px; }
+.pchart figcaption small { display: block; font-weight: 400; color: var(--muted); font-size: 13px; }
+.pchart svg { width: 100%; height: 190px; display: block; touch-action: pan-y; }
+.pchart svg text { font: 400 11px var(--mono); fill: var(--muted); }
+.ptip { position: absolute; pointer-events: none; background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 13px; box-shadow: 0 4px 14px rgba(0, 0, 0, .12); white-space: nowrap; transform: translate(-50%, calc(-100% - 10px)); }
+.ptip b { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.trend { font-size: 13px; color: var(--muted); }
+.trend .up { color: var(--good); } .trend .down { color: var(--blunder); }
+details.ptable > summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+details.ptable table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+details.ptable th, details.ptable td { text-align: left; padding: 5px 0; border-bottom: 1px solid var(--line); }
+details.ptable td.num, details.ptable th.r { text-align: right; font-family: var(--mono); }
+
 /* Ledger */
 .ledger { display: grid; gap: 8px; }
 details.game { background: var(--sheet); border: 1px solid var(--line); border-radius: 8px; }
@@ -153,6 +173,19 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
     <p class="habit" id="habit" hidden></p>
     <div class="figures" id="figures"></div>
   </header>
+
+  <section id="progress" aria-labelledby="progress-title">
+    <div class="section-head">
+      <h2 id="progress-title">Is the habit taking hold?</h2>
+      <p id="progress-lede"></p>
+    </div>
+    <div class="figures" id="progress-tiles"></div>
+    <div class="progress-charts">
+      <figure class="pchart" id="pc-hung"></figure>
+      <figure class="pchart" id="pc-first"></figure>
+    </div>
+    <details class="ptable"><summary>Show as a table</summary><div id="progress-table"></div></details>
+  </section>
 
   <section id="practice" aria-labelledby="practice-title">
     <div class="section-head">
@@ -243,7 +276,8 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   const top = (R.leaks || []).find((t) => t.lesson === R.top_leak);
   const topLesson = R.top_leak || lessonsSorted.find((k) => k !== "positional") || lessonsSorted[0];
 
-  $("eyebrow").textContent = `Chess.com · ${R.user} · ${R.games_analysed} games · ${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])}`;
+  const source = R.games.some((g) => (g.link || "").startsWith("file:")) ? "Chess.com and zchess" : "Chess.com";
+  $("eyebrow").textContent = `${source} · ${R.user} · ${R.games_analysed} games · ${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])}`;
   $("headline").textContent = topLesson ? `Your #1 leak: you ${lessonName(topLesson)}.` : "Here's what's costing you games.";
   if (top) {
     const next = (R.leaks || []).filter((t) => t !== top && t.lesson !== "positional").slice(0, 2);
@@ -258,6 +292,119 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
     [perGame, "blunders per game"],
     [`${lessonCounts.missed_capture || 0}`, "free captures missed"],
   ].map(([v, l]) => `<div class="figure"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
+
+  // ---------- progress ----------
+  // Per game, oldest first: pieces hung (mistakes and blunders that hung
+  // one) and the move of the first blunder (null: none). The last 10 games
+  // against the 10 before (or the two halves, with fewer than 20).
+  const chrono = R.games.slice().sort((a, b) => (a.date + (a.link || "")).localeCompare(b.date + (b.link || "")));
+  const prog = chrono.map((g, i) => {
+    const firstBlunder = g.flags.find((f) => f.cls === "blunder");
+    return {
+      i, g,
+      hung: g.flags.filter((f) => f.cls !== "inaccuracy" && lessonOf(f) === "hung_piece").length,
+      first: firstBlunder ? firstBlunder.move_no : null,
+      opp: g.color === "white" ? g.black : g.white,
+    };
+  });
+  const span = Math.min(10, Math.floor(prog.length / 2));
+  const recent = prog.slice(-span), before = prog.slice(-2 * span, -span);
+  const mean = (xs) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+  const median = (xs) => {
+    if (!xs.length) return null;
+    const v = xs.slice().sort((a, b) => a - b), m = v.length >> 1;
+    return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  };
+  const firsts = (xs) => xs.map((d) => d.first).filter((x) => x !== null);
+  const clean = (xs) => xs.filter((d) => d.first === null).length;
+  // Trailing average over the last `w` games (ignoring games without a value).
+  const rolling = (key, w) => prog.map((d, k) => {
+    const xs = prog.slice(Math.max(0, k - w + 1), k + 1).map((e) => e[key]).filter((x) => x !== null);
+    return xs.length ? mean(xs) : null;
+  });
+  const fmt1 = (x) => x === null ? "–" : (Math.round(x * 10) / 10).toString();
+
+  function trend(now, was, betterWhenLower) {
+    if (now === null || was === null) return "";
+    if (Math.abs(now - was) < 1e-9) return `<span class="trend">same as the ${span} before (${fmt1(was)})</span>`;
+    const better = betterWhenLower ? now < was : now > was;
+    return `<span class="trend"><span class="${better ? "up" : "down"}">${now < was ? "▼" : "▲"} ${better ? "better" : "worse"}</span> than the ${span} before (${fmt1(was)})</span>`;
+  }
+  if (span >= 3) {
+    $("progress-lede").textContent = `Your last ${span} games against the ${span} before, and every game since ${fmtDate(chrono[0].date)}. ` +
+      "Fewer hung pieces, and a first blunder later in the game (or none at all), mean the blunder check is working, long before your rating shows it.";
+    $("progress-tiles").innerHTML = [
+      [fmt1(mean(recent.map((d) => d.hung))), "pieces hung per game", trend(mean(recent.map((d) => d.hung)), mean(before.map((d) => d.hung)), true)],
+      [fmt1(median(firsts(recent))), "move of your first blunder (median)", trend(median(firsts(recent)), median(firsts(before)), false)],
+      [`${clean(recent)} of ${span}`, "games without a blunder", trend(clean(recent), clean(before), false)],
+    ].map(([v, l, t]) => `<div class="figure"><b>${esc(v)}</b><span>${esc(l)}</span>${t}</div>`).join("");
+  } else {
+    $("progress").hidden = true;
+  }
+
+  // A small chart: a muted dot per game, the trailing average as the accent
+  // line, a crosshair tooltip. `key` picks the value; games without one sit
+  // in a "none" lane at the top (for the first blunder: a clean game).
+  function progressChart(el, { key, title, sub, avg, unit, noneLabel }) {
+    const W = Math.max(el.clientWidth, 280), H = 190;
+    const m = { l: noneLabel ? 40 : 30, r: 12, t: noneLabel ? 32 : 12, b: 22 };
+    const vals = prog.map((d) => d[key]).filter((x) => x !== null);
+    const top = Math.max(4, ...vals);
+    const step = top > 30 ? 10 : top > 12 ? 5 : top > 6 ? 2 : 1;
+    const ymax = Math.ceil(top / step) * step;
+    const x = (i) => m.l + (prog.length < 2 ? 0 : (i / (prog.length - 1)) * (W - m.l - m.r));
+    const y = (v) => H - m.b - (v / ymax) * (H - m.t - m.b);
+    const noneY = 12;
+    let grid = "";
+    for (let v = 0; v <= ymax; v += step) {
+      grid += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1"/>` +
+        `<text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
+    }
+    if (noneLabel) grid += `<text x="${m.l - 6}" y="${noneY + 4}" text-anchor="end">${esc(noneLabel)}</text>`;
+    const xl = `<text x="${m.l}" y="${H - 6}">${esc(fmtDate(chrono[0].date))}</text>` +
+      `<text x="${W - m.r}" y="${H - 6}" text-anchor="end">${esc(fmtDate(chrono[chrono.length - 1].date))}</text>`;
+    const dots = prog.map((d) => d[key] === null
+      ? `<circle cx="${x(d.i)}" cy="${noneY}" r="4" fill="var(--sheet)" stroke="var(--dot)" stroke-width="1.5"/>`
+      : `<circle cx="${x(d.i)}" cy="${y(d[key])}" r="4" fill="var(--dot)" stroke="var(--sheet)" stroke-width="2"/>`).join("");
+    let path = "", pen = false;
+    avg.forEach((v, k) => {
+      if (v === null) { pen = false; return; }
+      path += `${pen ? "L" : "M"}${x(k).toFixed(1)} ${y(v).toFixed(1)} `; pen = true;
+    });
+    const last = avg.length - 1;
+    el.innerHTML = `<figcaption>${esc(title)}<small>${esc(sub)}</small></figcaption>
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}: ${esc(sub)}. The table below has every game.">
+        ${grid}${xl}${dots}
+        <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        ${avg[last] !== null ? `<circle cx="${x(last)}" cy="${y(avg[last])}" r="4.5" fill="var(--accent)" stroke="var(--sheet)" stroke-width="2"/>` : ""}
+        <line class="xh" x1="0" x2="0" y1="${m.t - 14}" y2="${H - m.b}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>
+      </svg><div class="ptip" hidden></div>`;
+    const svg = el.querySelector("svg"), tip = el.querySelector(".ptip"), xh = el.querySelector(".xh");
+    svg.addEventListener("pointermove", (e) => {
+      const r = svg.getBoundingClientRect();
+      const px = ((e.clientX - r.left) / r.width) * W;
+      const k = Math.max(0, Math.min(prog.length - 1, Math.round(((px - m.l) / (W - m.l - m.r)) * (prog.length - 1))));
+      const d = prog[k];
+      xh.setAttribute("x1", x(k)); xh.setAttribute("x2", x(k)); xh.setAttribute("visibility", "visible");
+      const v = d[key];
+      tip.innerHTML = `${esc(fmtDate(d.g.date))} vs ${esc(d.opp)} · <b>${v === null ? esc(noneLabel || "–") : esc(v)}</b> ${v === null ? "" : esc(unit)}` +
+        (avg[k] !== null ? `<br><span style="color:var(--muted)">average of the last 5: <b>${fmt1(avg[k])}</b></span>` : "");
+      tip.hidden = false;
+      tip.style.left = `${(x(k) / W) * r.width}px`;
+      tip.style.top = `${((v === null ? noneY : y(v)) / H) * r.height + svg.offsetTop}px`;
+    });
+    svg.addEventListener("pointerleave", () => { tip.hidden = true; xh.setAttribute("visibility", "hidden"); });
+  }
+  function drawProgress() {
+    if ($("progress").hidden) return;
+    progressChart($("pc-hung"), { key: "hung", title: "Pieces hung per game", sub: "dots: each game · line: average of the last 5 · lower is better", avg: rolling("hung", 5), unit: "hung" });
+    progressChart($("pc-first"), { key: "first", title: "Move of your first blunder", sub: "dots: each game · line: average of the last 5 · later is better", avg: rolling("first", 5), unit: "", noneLabel: "none" });
+  }
+  drawProgress();
+  addEventListener("resize", () => { clearTimeout(drawProgress.t); drawProgress.t = setTimeout(drawProgress, 150); });
+  $("progress-table").innerHTML = `<table><thead><tr><th>Game</th><th>Opponent</th><th class="r">Pieces hung</th><th class="r">First blunder</th></tr></thead><tbody>` +
+    prog.slice().reverse().map((d) => `<tr><td>${esc(fmtDate(d.g.date))}</td><td>${esc(d.opp)}</td><td class="num">${d.hung}</td><td class="num">${d.first === null ? "none" : "move " + d.first}</td></tr>`).join("") +
+    "</tbody></table>";
 
   // ---------- board ----------
   // Pieces: the cburnett set by Colin M. L. Burnett (GPLv2+), as used by Lichess.
@@ -997,7 +1144,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   });
 
   $("footer").innerHTML = `
-    <p>Analysed by zchess, about ${Math.round(R.nodes / 1000)}k positions searched per move. Accuracy and the inaccuracy / mistake / blunder marks follow Lichess's method: a move that loses 10, 20 or 30 points of winning chances.</p>
+    <p>Analysed by zchess, about ${Math.round(R.nodes / 1000)}k positions searched per move. Accuracy and the inaccuracy / mistake / blunder marks follow Lichess's method: a move that loses 10, 20 or 30 points of winning chances; far ahead or behind, where those barely move, throwing away 3 pawns is a mistake and 6 a blunder.</p>
     <p>Pieces: the cburnett set by Colin M. L. Burnett (GPLv2+), as used on Lichess.</p>
     <p>An annotated copy of every game, with evaluations and better lines, is in <code>zchess/data/review/fingjoey-annotated.pgn</code>; open it in En Croissant to step through.</p>`;
 
