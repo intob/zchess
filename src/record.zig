@@ -17,9 +17,11 @@ const game = @import("game.zig");
 const Position = position.Position;
 const Move = position.Move;
 
-/// Moves taken back at once (a move each) before a shorter move list counts
-/// as a new game rather than a takeback.
-const MAX_TAKEBACK = 2;
+/// A move list this short (the engine moves first, or replies to the first
+/// move) that drops recorded moves starts a new game; any other takeback,
+/// however deep, is the same game. En Croissant starts a new engine
+/// process for each game and never sends `ucinewgame`; other GUIs do.
+const NEW_GAME_PLIES = 1;
 
 pub const Record = struct {
     active: bool = false,
@@ -48,16 +50,18 @@ pub const Record = struct {
     }
 
     /// Brings the record up to the game the GUI sent (`start` and `moves`,
-    /// the engine to move): the same game when one move list extends the
-    /// other (a takeback of at most MAX_TAKEBACK moves), else a new game.
-    /// True when a new game starts.
+    /// the engine to move): the same game after takebacks (and other moves
+    /// played instead), a new one from another start position or when the
+    /// GUI sends the start of a game (see NEW_GAME_PLIES); `ucinewgame`
+    /// clears `active`. True when a new game starts.
     pub fn sync(r: *Record, gpa: std.mem.Allocator, start: *const Position, moves: []const Move, now: i64) !bool {
         const common = blk: {
             if (!r.active or r.start.key != start.key) break :blk null;
             const n = @min(r.moves.items.len, moves.len);
-            for (r.moves.items[0..n], moves[0..n]) |a, b| if (!a.eql(b)) break :blk null;
-            if (r.moves.items.len > moves.len + MAX_TAKEBACK) break :blk null;
-            break :blk n;
+            var c: usize = 0;
+            while (c < n and r.moves.items[c].eql(moves[c])) c += 1;
+            if (moves.len <= NEW_GAME_PLIES and r.moves.items.len > c) break :blk null;
+            break :blk c;
         };
         const fresh = common == null;
         if (fresh) {
@@ -235,7 +239,23 @@ test "record: takebacks, new games, comments, result" {
     // A takeback of one move keeps the game (and drops that move's comment)...
     try std.testing.expect(!try r.sync(gpa, &start, moves[0..3], 1_760_633_540));
     try std.testing.expectEqual(3, r.moves.items.len);
-    // ...a much shorter or different list is a new game.
+    // ...and so does taking back both sides' moves and playing another:
+    // 1. f3 e5 2. g4 -> 1. f3 e5 2. h3.
+    try r.push(gpa, moves[3], "");
+    var other = moves;
+    var q = start;
+    for (moves[0..2]) |m| q = q.makeMove(m);
+    other[2] = movegen.parseUci(&q, "h2h3").?;
+    try std.testing.expect(!try r.sync(gpa, &start, other[0..3], 1_760_633_545));
+    try std.testing.expectEqual(3, r.moves.items.len);
+    try std.testing.expect(r.moves.items[2].eql(other[2]));
+    try std.testing.expectEqualStrings("", r.comments.items[2]);
+    try std.testing.expectEqualStrings("Opponent played 1... e5.", r.comments.items[1]);
+    try std.testing.expectEqual(1_760_633_519, r.started);
+    // ...or several moves back at once (no engine turn in between)...
+    try std.testing.expect(!try r.sync(gpa, &start, other[0..2], 1_760_633_550));
+    try std.testing.expectEqual(2, r.moves.items.len);
+    // ...but the start of a game (the engine to make the first move) is a new game.
     try std.testing.expect(try r.sync(gpa, &start, moves[0..0], 1_760_633_600));
     try std.testing.expectEqual(0, r.moves.items.len);
     try std.testing.expectEqual(bb.WHITE, r.engine);

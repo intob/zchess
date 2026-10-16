@@ -5,8 +5,9 @@ and write one annotated PGN per game into En Croissant's Files folder
 
 Your games against zchess count too: with Coach on, the engine records each
 game it plays in ~/zchess-games (UCI option GameRecord). Finished ones (the
-board decided the result, or no move for 30 minutes: a resignation or a flag
-never reaches the engine) are reviewed the same way and also added to the
+board decided the result, En Croissant's log says the game ended, or no move
+for 30 minutes: a resignation or a flag never reaches the engine) are
+reviewed the same way and also added to the
 "zchess games" database in En Croissant's Databases tab (tools/ec-db, built on
 first use), where you can open them and analyse them with any engine.
 
@@ -27,6 +28,7 @@ usage: scripts/ec-sync.py [--user fingjoey] [--months 2] [--threads N]
                           [--played ~/zchess-games] [--all]
 """
 import argparse
+import calendar
 import json
 import os
 import pathlib
@@ -42,6 +44,7 @@ import leaks
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 UA = {"User-Agent": "zchess-ec-bridge"}
 DB_DIR = pathlib.Path.home() / "Library/Application Support/org.encroissant.app/db"
+EC_LOG = pathlib.Path.home() / "Library/Logs/org.encroissant.app/en-croissant.log"
 PLAYED_DB = "zchess games"
 # A recorded game with no result and no move for this long is over.
 IDLE_SECONDS = 30 * 60
@@ -95,14 +98,30 @@ def plies(game: str) -> int:
     return sum(1 for tok in text.split() if re.match(r"^[a-hKQRBNO]", tok))
 
 
+def game_ends() -> list[float]:
+    """When En Croissant's games ended (its log, UTC), as epoch seconds."""
+    ends = []
+    try:
+        for line in EC_LOG.read_text(errors="replace").splitlines():
+            m = re.match(r"\[(\d{4}-\d\d-\d\d)\]\[(\d\d:\d\d:\d\d)\]\[en_croissant::game\]\[INFO\] Game loop ended", line)
+            if m:
+                ends.append(calendar.timegm(time.strptime(f"{m[1]} {m[2]}", "%Y-%m-%d %H:%M:%S")))
+    except OSError:
+        pass
+    return ends
+
+
 def played_games(folder: pathlib.Path, user: str) -> list[str]:
     """Finished games recorded by zchess (see the docstring), as PGN, with the
     player's name filled in when the engine didn't know it."""
     games = []
     now = time.time()
+    ends = game_ends()
     for path in sorted(folder.glob("*.pgn")):
         game = path.read_text()
-        if header(game, "Result") == "*" and now - path.stat().st_mtime < IDLE_SECONDS:
+        last_move = path.stat().st_mtime
+        ended = any(e >= last_move for e in ends)
+        if header(game, "Result") == "*" and not ended and now - last_move < IDLE_SECONDS:
             continue  # maybe still being played
         if plies(game) < MIN_PLIES:
             continue

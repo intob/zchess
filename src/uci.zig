@@ -579,6 +579,7 @@ pub const Engine = struct {
             if (e.coach_searcher) |c| c.clearHistory();
             e.coach_new_game = true;
             e.coach_last = 0;
+            e.record.active = false;
             e.coach_ctx.newGame();
             e.coach_rep_stale = true;
             e.loadFocus();
