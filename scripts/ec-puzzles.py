@@ -3,10 +3,12 @@
 
 Reads a `zchess review` JSON (default: the cumulative one ec-sync.py keeps) and
 writes a database in the same format as En Croissant's Lichess puzzles:
-  - "find the win": you missed a capture or a mate. The opponent's previous
-    move is played, then you find the move you missed.
-  - "spot the threat": you hung a piece or allowed mate. Your move is played,
-    then you find how your opponent punishes it.
+  - "find the win": you missed a capture, a mate or a tactic (fork, pin, ...).
+    The opponent's previous move is played, then you find the move you missed.
+  - "spot the threat": you hung a piece, allowed mate or walked into a tactic.
+    Your move is played, then you find how your opponent punishes it.
+Puzzles are tagged with Lichess's theme names (fork, pin, discoveredAttack, ...)
+so En Croissant can filter by them.
 Lichess convention: `fen` is the position before the first move of `moves`,
 which En Croissant plays automatically; the solver plays the next move.
 
@@ -18,6 +20,8 @@ import pathlib
 import sqlite3
 import subprocess
 import sys
+
+import leaks
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PUZZLES = pathlib.Path.home() / "Library/Application Support/org.encroissant.app/puzzles"
@@ -56,17 +60,17 @@ def solver_line(line: list[str], mate: bool) -> list[str]:
 
 
 def make_puzzle(flag: dict) -> dict | None:
-    kind = flag["kind"]
     if flag["cls"] == "inaccuracy":
         return None
-    if kind in ("missed_capture", "missed_mate"):
+    kind = flag["kind"]
+    mate = kind in ("missed_mate", "allowed_mate")
+    ptype = leaks.puzzle_type(flag)
+    if ptype == "find":
         if "setup_fen" not in flag:
             return None
-        mate = kind == "missed_mate"
         solution = solver_line(flag.get("best_line_uci", []), mate)
         fen, setup, theme = flag["setup_fen"], flag["setup_uci"], "findTheWin"
-    elif kind in ("hung_piece", "allowed_mate"):
-        mate = kind == "allowed_mate"
+    elif ptype == "threat":
         solution = solver_line(flag.get("refutation_uci", []), mate)
         fen, setup, theme = flag["fen"], flag["played_uci"], "spotTheThreat"
     else:
@@ -74,13 +78,19 @@ def make_puzzle(flag: dict) -> dict | None:
     if not solution or "0000" in solution:
         return None
     solver_moves = (len(solution) + 1) // 2
-    themes = [theme, flag["phase"]]
+    themes = [theme, flag["phase"], leaks.lesson_of(flag)]
+    motif = leaks.MOTIF_THEME.get(flag.get("motif", ""))
+    if motif:
+        themes.append(motif)
     if mate:
         themes += ["mate", f"mateIn{solver_moves}"]
         rating = 900 + 200 * (solver_moves - 1)
     else:
-        themes += ["hangingPiece", "oneMove"]
-        rating = 700 if theme == "findTheWin" else 800
+        if kind in ("hung_piece", "missed_capture"):
+            themes.append("hangingPiece")
+        themes.append("oneMove")
+        # Hanging pieces are the easiest to see; tactics and combinations less so.
+        rating = (700 if theme == "findTheWin" else 800) + (0 if kind != "other" else 300 if motif else 500)
     return {"fen": fen, "moves": " ".join([setup] + solution), "rating": rating, "themes": themes}
 
 

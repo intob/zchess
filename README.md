@@ -109,18 +109,51 @@ datagen, more positions per generation, and a wider hidden layer.
 
 `zchess review --user <name> <pgn files>` searches every position of a player's
 games and flags inaccuracies, mistakes and blunders by lost winning chances
-(Lichess's win% method), each with a plain-language label (hung a piece, missed
-a capture, missed or allowed mate), the better move and its line. It writes a
-JSON report and an annotated PGN; `scripts/review-report.py review.json >
-report.html` turns the JSON into a page with puzzles made from the player's own
-mistakes (vector pieces: cburnett, GPLv2+).
+(Lichess's win% method), each with a plain-language label, the better move and
+its line. It writes a JSON report and an annotated PGN.
+
+The label says what went wrong (`src/tactics.zig`): a piece left hanging (also
+when the opponent takes it only after an in-between check), a missed capture,
+an allowed or missed mate (back-rank and smothered mates by name), or the
+tactic behind it: a fork, pin, skewer, discovered attack or check, double
+check, trapped piece or removed defender, either one the opponent's reply
+plays against you or one you missed. It looks for the tactic in the first
+moves of the punishing line and of the better line, so "after Bxf2+, Nf2 hits
+your queen and rook" counts too. Failing that, a deeper combination that wins
+material, an attack on your king, or a positional mistake:
+
+    9. Be2? Mistake: walked into a knight fork: Nxc2+ hits your king and rook.
+    6... Nxb5?? Blunder: allowed a discovered check: Nxc6+ uncovers check, and the knight wins your queen.
+
+Each flagged move gets a `lesson` (`hung_piece`, `allowed_fork`, `missed_pin`,
+...) that everything downstream groups by. The JSON also lists the player's
+moves while the game is still in opening theory (`opening_moves`), with what
+strong players play there.
+
+`scripts/leaks.py review.json` ranks the lessons by how many of your last 20
+games they cost something in, and gives the habit that fixes the top one:
+
+    #1 leak: You left a piece hanging in 13 of your last 20 games (24 times, mostly your knights).
+       habit: Before every move, check what your opponent's last move attacks, and that every
+              piece you own is still defended after the move you want to play.
+
+`scripts/review-report.py review.json > report.html` turns the JSON into a page
+that leads with that leak, and a trainer with puzzles from your own mistakes
+(*find the win*, *spot the threat*) and opening drills (positions you reached
+in theory: play what strong players play). Puzzles come back on a spaced
+schedule (1, 3, 7, 16, 35 days when right first time; tomorrow when missed),
+at most 15 new ones a day, your #1 leak first; progress is kept in the
+browser (vector pieces: cburnett, GPLv2+).
 
 `scripts/ec-sync.py [--user fingjoey]` is the En Croissant bridge: it fetches new
 Chess.com games, reviews them and writes one annotated PGN per game into
-`~/Documents/EnCroissant/zchess` (Files tab). It then runs `scripts/ec-puzzles.py`,
+`~/Documents/EnCroissant/zchess` (Files tab). It then writes your #1 leak to
+`.focus` in that folder (for the live coach, below), runs `scripts/ec-puzzles.py`,
 which turns the mistakes into a puzzle database in En Croissant's own format
-("<user> mistakes" in the Puzzles tab): *spot the threat* (your bad move is played,
-find the punishment) and *find the win* (find the capture or mate you missed).
+("<user> mistakes" in the Puzzles tab, tagged with Lichess's theme names: fork,
+pin, discoveredAttack, ...): *spot the threat* (your bad move is played, find the
+punishment) and *find the win* (find the capture, mate or tactic you missed), and
+rebuilds the report page as `data/review/<user>-report.html`.
 
 Live coaching while you play: set the UCI option `Coach` to true and, while it
 thinks about its reply, zchess judges the move you just made the same way (300k
@@ -133,6 +166,13 @@ logs: search for "coach") and appended to `CoachLog`
 with a header per game:
 
     2... Qh4?? Blunder: left your queen hanging (win chance 49% -> 2%). Better was Nc6 (Nc6 Nc3 Nf6 Bc4). The punishment: Nxh4 Nf6 Nc3 Bc5. Eval: -9.99
+
+The first comment of each game starts with your #1 leak and its habit (from the
+`.focus` file `scripts/ec-sync.py` writes into the `CoachGames` folder), and a
+mistake of that same kind says so:
+
+    Focus this game: You left a piece hanging in 13 of your last 20 games (24 times, mostly your knights). Before every move, check what your opponent's last move attacks, ... | 1. e4: best move. ...
+    7... Ng4?? Blunder: left your knight hanging (win chance 57% -> 8%). Better was O-O ... That's your #1 leak again. Before every move, check what your opponent's last move attacks, ...
 
 `go infinite` (analysis) and ponder misses aren't commented on.
 
@@ -152,7 +192,13 @@ threatens, found by letting it move twice (a null move) and seeing what that win
 
     Opponent played 6. Qh5. Threatens mate: Qxf7#. Eval: +0.34
 
-In the terminal: `zchess play --coach --threats`.
+With `CoachHints` on (training wheels; turn it off once the check is a habit), each
+engine move is followed by your pieces that can now be taken for profit: attacked,
+and undefended or attacked by something cheaper. It needs no search:
+
+    After 7. Nxc6+: Watch: your queen on d8 is attacked by a knight.
+
+In the terminal: `zchess play --coach --threats --hints`.
 
 Your games come from `CoachGames` (a PGN file or a folder of them; default
 `~/Documents/EnCroissant/zchess`, where `scripts/ec-sync.py` puts them, re-read every

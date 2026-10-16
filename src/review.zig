@@ -16,6 +16,9 @@ const cli = @import("cli.zig");
 const pgn = @import("pgn.zig");
 const play = @import("play.zig");
 const TT = @import("tt.zig").TT;
+const tactics = @import("tactics.zig");
+const openings = @import("openings.zig");
+const coach = @import("coach.zig");
 const Output = @import("output.zig").Output;
 
 const Position = position.Position;
@@ -35,6 +38,33 @@ const help =
 
 pub const Class = enum { good, inaccuracy, mistake, blunder };
 pub const Kind = enum { other, hung_piece, missed_capture, missed_mate, allowed_mate, bad_capture };
+
+/// What a flagged move teaches: its kind, or for `.other` the tactic behind
+/// it (one the player allowed or one they missed), a deeper combination, or
+/// a positional mistake. The JSON report, the coach and the scripts group
+/// mistakes by this.
+pub const Lesson = enum {
+    hung_piece,
+    missed_capture,
+    bad_capture,
+    allowed_mate,
+    missed_mate,
+    allowed_fork,
+    missed_fork,
+    allowed_pin,
+    missed_pin,
+    allowed_skewer,
+    missed_skewer,
+    allowed_discovery,
+    missed_discovery,
+    trapped_piece,
+    missed_trap,
+    allowed_removal,
+    missed_removal,
+    deep_tactic,
+    king_safety,
+    positional,
+};
 
 pub const piece_names = [6][]const u8{ "pawn", "knight", "bishop", "rook", "queen", "king" };
 const see_value = [6]i32{ 100, 300, 300, 500, 900, 0 };
@@ -142,7 +172,10 @@ const Summary = struct {
     accuracy: f64 = 0,
     counts: [4]u32 = .{ 0, 0, 0, 0 },
     kinds: [6]u32 = .{0} ** 6,
+    lessons: [n_lessons]u32 = .{0} ** n_lessons,
 };
+
+const n_lessons = std.enums.values(Lesson).len;
 
 fn userIsWhite(in: *const Input, user: []const u8) bool {
     return std.ascii.eqlIgnoreCase(in.header("White"), user);
@@ -166,7 +199,63 @@ pub const Label = struct {
     piece: ?bb.PieceType = null,
     /// A second lesson in the same move: "and left your knight hanging".
     also_hung: ?bb.PieceType = null,
+    /// The tactic behind it (see tactics.zig), and whether it is the
+    /// opponent's reply (against the player) or a move the player missed.
+    tactic: tactics.Hit = .{},
+    against: bool = true,
+    /// The punishing line wins material even though no tactic was named,
+    /// or it is a run of checks against the player's king.
+    loses_material: bool = false,
+    king_attack: bool = false,
+    /// SAN of the tactic's key move and, when that comes later in the line
+    /// (`tactic.at` > 0), of the moves leading to it.
+    san: Sans = .{},
+
+    pub fn keySan(l: *const Label) []const u8 {
+        return l.san.key[0..l.san.key_len];
+    }
+    pub fn leadSan(l: *const Label) []const u8 {
+        return l.san.lead[0..l.san.lead_len];
+    }
+
+    pub fn lesson(l: Label) Lesson {
+        return switch (l.kind) {
+            .hung_piece => .hung_piece,
+            .missed_capture => .missed_capture,
+            .bad_capture => .bad_capture,
+            .allowed_mate => .allowed_mate,
+            .missed_mate => .missed_mate,
+            .other => switch (l.tactic.motif) {
+                .fork => if (l.against) .allowed_fork else .missed_fork,
+                .pin => if (l.against) .allowed_pin else .missed_pin,
+                .skewer => if (l.against) .allowed_skewer else .missed_skewer,
+                .discovered_attack, .discovered_check, .double_check => if (l.against) .allowed_discovery else .missed_discovery,
+                .trapped_piece => if (l.against) .trapped_piece else .missed_trap,
+                .removed_defender => if (l.against) .allowed_removal else .missed_removal,
+                .back_rank_mate, .smothered_mate => if (l.against) .allowed_mate else .missed_mate,
+                .none => if (l.loses_material) .deep_tactic else if (l.king_attack) .king_safety else .positional,
+            },
+        };
+    }
 };
+
+/// Material of side `c` in pawns (king excluded).
+fn material(p: *const Position, c: bb.Color) i32 {
+    var total: i32 = 0;
+    for (0..5) |pt| total += @as(i32, @intCast(bb.popcount(p.pieces[pt] & p.colors[c]))) * @divTrunc(see_value[pt], 100);
+    return total;
+}
+
+/// Material (pawns) the side to move in `p` gains over the line `pv`.
+fn lineGain(p: *const Position, pv: []const Move) i32 {
+    const us = p.side;
+    var q = p.*;
+    for (pv) |m| {
+        if (m.data == 0) break;
+        q = q.makeMove(m);
+    }
+    return (material(&q, us) - material(&q, us ^ 1)) - (material(p, us) - material(p, us ^ 1));
+}
 
 /// Plain-language label for a flagged move. When the move both missed a win of
 /// material and left something hanging, the bigger swing leads and the other
@@ -176,6 +265,109 @@ pub const Label = struct {
 const min_gain = 200;
 
 pub fn classifyKind(positions: []const Position, evals: []const Eval, moves: []const Move, i: usize) Label {
+    var l = classifyMaterial(positions, evals, moves, i);
+    const reply = &evals[i + 1];
+    const best = &evals[i];
+    const against = findInLine(&positions[i + 1], reply.pv[0..reply.pv_len], 4);
+    const missed = if (best.best.eql(moves[i])) Found{} else findInLine(&positions[i], best.pv[0..best.pv_len], 2);
+    const is_mate = struct {
+        fn f(h: tactics.Hit) bool {
+            return h.motif == .back_rank_mate or h.motif == .smothered_mate;
+        }
+    }.f;
+    var use: ?*const Found = null;
+    switch (l.kind) {
+        .allowed_mate => if (is_mate(against.hit)) {
+            use = &against;
+        },
+        .missed_mate => if (is_mate(missed.hit)) {
+            use = &missed;
+        },
+        else => if (against.hit.motif != .none) {
+            use = &against;
+        } else if (missed.hit.motif != .none) {
+            use = &missed;
+        },
+    }
+    if (use) |f| {
+        l.tactic = f.hit;
+        l.against = f == &against;
+        l.san = f.san;
+    }
+    if (l.kind == .other and l.tactic.motif == .none) {
+        const pv = reply.pv[0..reply.pv_len];
+        l.loses_material = lineGain(&positions[i + 1], pv) >= 2;
+        l.king_attack = kingHunt(&positions[i + 1], pv);
+    }
+    return l;
+}
+
+pub const Sans = struct {
+    key: [10]u8 = undefined,
+    key_len: u8 = 0,
+    lead: [48]u8 = undefined,
+    lead_len: u8 = 0,
+};
+
+/// A tactic in a line, and the SAN of its key move (and of the moves before
+/// it when the tactic comes later).
+const Found = struct {
+    hit: tactics.Hit = .{},
+    san: Sans = .{},
+};
+
+/// The first tactic among the moving side's moves of `pv` up to ply
+/// `max_ply` (a check or capture often comes first, the fork after it).
+/// Deep in the line only the clearest motifs count.
+fn findInLine(start: *const Position, pv: []const Move, max_ply: usize) Found {
+    var f = Found{};
+    var p = start.*;
+    var k: usize = 0;
+    while (k < pv.len and k <= max_ply) : (k += 1) {
+        if (pv[k].data == 0) break;
+        if (k % 2 == 0) {
+            const h = tactics.find(&p, pv[k..]);
+            const clear = switch (h.motif) {
+                .fork, .skewer, .double_check, .discovered_check, .back_rank_mate, .smothered_mate => true,
+                else => false,
+            };
+            if (h.motif != .none and (k <= 2 or clear)) {
+                f.hit = h;
+                f.hit.at = @intCast(k);
+                var b: [16]u8 = undefined;
+                const key = play.san(&p, pv[k], &b);
+                f.san.key_len = @intCast(@min(key.len, f.san.key.len));
+                @memcpy(f.san.key[0..f.san.key_len], key[0..f.san.key_len]);
+                var w: Io.Writer = .fixed(&f.san.lead);
+                var q = start.*;
+                for (pv[0..k], 0..) |m, j| {
+                    w.print("{s}{s}", .{ if (j > 0) " " else "", play.san(&q, m, &b) }) catch break;
+                    q = q.makeMove(m);
+                }
+                f.san.lead_len = @intCast(w.buffered().len);
+                return f;
+            }
+        }
+        p = p.makeMove(pv[k]);
+    }
+    return f;
+}
+
+/// Whether the line `pv` (the opponent to move in `p`) chases the player's
+/// king: two checks, or a check that forces it to move.
+fn kingHunt(p: *const Position, pv: []const Move) bool {
+    var q = p.*;
+    var checks: u32 = 0;
+    for (pv, 0..) |m, k| {
+        if (m.data == 0) break;
+        if (k % 2 == 1 and q.inCheck() and bb.pieceType(q.board[m.from()]) == bb.KING and !m.isCastle()) return true;
+        q = q.makeMove(m);
+        if (k % 2 == 0 and q.inCheck()) checks += 1;
+    }
+    return checks >= 2;
+}
+
+fn classifyMaterial(positions: []const Position, evals: []const Eval, moves: []const Move, i: usize) Label {
     const before = evals[i].score; // mover's view, before the move
     const after_opp = evals[i + 1].score; // opponent's view, after the move
     if (after_opp >= search.MATE_BOUND and before > -search.MATE_BOUND) return .{ .kind = .allowed_mate };
@@ -204,24 +396,98 @@ pub fn classifyKind(positions: []const Position, evals: []const Eval, moves: []c
         }
         return .{ .kind = .missed_capture, .piece = m };
     }
+    if (hung == null) hung = takenLater(&positions[i + 1], evals[i + 1].pv[0..evals[i + 1].pv_len]);
     if (hung) |h| return .{ .kind = .hung_piece, .piece = h };
     if (moves[i].isCapture() and !search.see(&positions[i], moves[i], 0)) return .{ .kind = .bad_capture, .piece = victimOf(&positions[i], moves[i]) };
     return .{};
 }
 
-pub fn explain(l: Label, best_san: []const u8, buf: []u8) []const u8 {
+/// A loose piece of the player's (attacked, and undefended or attacked by
+/// something cheaper) that the opponent's line `pv` from `p` takes within its
+/// first three moves, after an in-between move such as a check.
+fn takenLater(p: *const Position, pv: []const Move) ?bb.PieceType {
+    const loose = tactics.loosePieces(p, p.side ^ 1);
+    if (loose == 0) return null;
+    var q = p.*;
+    for (pv[0..@min(pv.len, 5)], 0..) |m, k| {
+        if (m.data == 0) break;
+        if (k % 2 == 0 and m.isCapture() and loose & bb.bit(m.to()) != 0 and bb.pieceColor(q.board[m.to()]) == p.side ^ 1)
+            return bb.pieceType(q.board[m.to()]);
+        q = q.makeMove(m);
+    }
+    return null;
+}
+
+/// Plain-language reason for a flagged move. `best_san` is the better move,
+/// `reply_san` the opponent's best reply to the move played.
+pub fn explain(l: Label, best_san: []const u8, reply_san: []const u8, buf: []u8) []const u8 {
     const p = if (l.piece) |pt| piece_names[pt] else "piece";
+    const fmt = std.fmt.bufPrint;
     return switch (l.kind) {
-        .allowed_mate => "allowed a forced checkmate",
-        .missed_mate => std.fmt.bufPrint(buf, "missed a forced checkmate starting with {s}", .{best_san}) catch "missed a forced checkmate",
-        .hung_piece => std.fmt.bufPrint(buf, "left your {s} hanging", .{p}) catch "left a piece hanging",
+        .allowed_mate => switch (l.tactic.motif) {
+            .back_rank_mate => fmt(buf, "allowed a back-rank mate, starting with {s}", .{reply_san}) catch "allowed a back-rank mate",
+            .smothered_mate => fmt(buf, "allowed a smothered mate, starting with {s}", .{reply_san}) catch "allowed a smothered mate",
+            else => "allowed a forced checkmate",
+        },
+        .missed_mate => switch (l.tactic.motif) {
+            .back_rank_mate => fmt(buf, "missed a back-rank mate starting with {s}", .{best_san}) catch "missed a back-rank mate",
+            .smothered_mate => fmt(buf, "missed a smothered mate starting with {s}", .{best_san}) catch "missed a smothered mate",
+            else => fmt(buf, "missed a forced checkmate starting with {s}", .{best_san}) catch "missed a forced checkmate",
+        },
+        .hung_piece => fmt(buf, "left your {s} hanging", .{p}) catch "left a piece hanging",
         .missed_capture => if (l.also_hung) |h|
-            std.fmt.bufPrint(buf, "missed taking the {s} with {s}, and left your {s} hanging", .{ p, best_san, piece_names[h] }) catch "missed winning material"
+            fmt(buf, "missed taking the {s} with {s}, and left your {s} hanging", .{ p, best_san, piece_names[h] }) catch "missed winning material"
         else
-            std.fmt.bufPrint(buf, "missed taking the {s} with {s}", .{ p, best_san }) catch "missed winning material",
+            fmt(buf, "missed taking the {s} with {s}", .{ p, best_san }) catch "missed winning material",
         .bad_capture => "captured into a losing exchange",
-        .other => "weakened your position",
+        .other => explainTactic(l, best_san, reply_san, buf),
     };
+}
+
+fn explainTactic(l: Label, best_san: []const u8, reply_san: []const u8, buf: []u8) []const u8 {
+    const h = l.tactic;
+    const t0 = if (h.targets[0]) |t| piece_names[t] else "piece";
+    const t1 = if (h.targets[1]) |t| piece_names[t] else "piece";
+    const by = if (h.by) |t| piece_names[t] else "piece";
+    const a = l.against;
+    const your = if (a) "your" else "the";
+    const verb = if (a) "allowed" else "missed";
+    // "after Bxf2+, Nf2 ..." when the tactic comes later in the line.
+    var mb: [72]u8 = undefined;
+    const key = if (l.keySan().len > 0) l.keySan() else if (a) reply_san else best_san;
+    const mv = if (h.at > 0) std.fmt.bufPrint(&mb, "after {s}, {s}", .{ l.leadSan(), key }) catch key else key;
+    var w: Io.Writer = .fixed(buf);
+    (switch (h.motif) {
+        .fork => if (a)
+            w.print("walked into a {s} fork: {s} hits your {s} and {s}", .{ by, mv, t0, t1 })
+        else
+            w.print("missed a {s} fork: {s} hits the {s} and {s}", .{ by, mv, t0, t1 }),
+        .pin => w.print("{s} a pin: {s} pins {s} {s} to {s} {s}", .{ verb, mv, your, t0, your, t1 }),
+        .skewer => w.print("{s} a skewer: {s} attacks {s} {s} and wins the {s} behind it", .{ verb, mv, your, t0, t1 }),
+        .discovered_check => if (h.targets[0]) |_|
+            w.print("{s} a discovered check: {s} uncovers check, and the {s} wins {s} {s}", .{ verb, mv, by, your, t0 })
+        else
+            w.print("{s} a discovered check: {s}", .{ verb, mv }),
+        .double_check => w.print("{s} a double check: {s}", .{ verb, mv }),
+        .discovered_attack => if (h.targets[1]) |t|
+            w.print("{s} a discovered attack: {s} hits {s} {s} and uncovers an attack on {s} {s}", .{ verb, mv, your, piece_names[t], your, t0 })
+        else
+            w.print("{s} a discovered attack: {s} uncovers an attack on {s} {s}", .{ verb, mv, your, t0 }),
+        .trapped_piece => if (a)
+            w.print("let your {s} get trapped: {s} attacks it and it has no safe square", .{ t0, mv })
+        else
+            w.print("missed trapping the {s}: {s}", .{ t0, mv }),
+        .removed_defender => w.print("{s} a removal of the defender: {s} takes the piece guarding {s} {s}", .{ verb, mv, your, t0 }),
+        .back_rank_mate => w.print("{s} a back-rank mate: {s}", .{ verb, mv }),
+        .smothered_mate => w.print("{s} a smothered mate: {s}", .{ verb, mv }),
+        .none => if (l.loses_material)
+            w.print("walked into a combination that wins material, starting with {s}", .{reply_san})
+        else if (l.king_attack)
+            w.print("let your opponent go after your king, starting with {s}", .{reply_san})
+        else
+            w.writeAll("gave up ground: no material goes straight away, but your position gets worse"),
+    }) catch return "walked into a tactic";
+    return w.buffered();
 }
 
 fn writeJsonString(w: *Io.Writer, s: []const u8) !void {
@@ -243,6 +509,11 @@ fn whiteCp(score: i32, side: bb.Color) i32 {
     return if (side == bb.WHITE) s else -s;
 }
 
+/// SAN of `m` in `p`, or "" for no move.
+fn sanOrEmpty(p: *const Position, m: Move, buf: *[16]u8) []const u8 {
+    return if (m.data == 0) "" else play.san(p, m, buf);
+}
+
 fn pgnEval(score: i32, side: bb.Color, buf: []u8) []const u8 {
     const white = if (side == bb.WHITE) score else -score;
     if (@abs(white) >= search.MATE_BOUND) {
@@ -250,6 +521,77 @@ fn pgnEval(score: i32, side: bb.Color, buf: []u8) []const u8 {
         return std.fmt.bufPrint(buf, "#{s}{d}", .{ if (white < 0) "-" else "", moves }) catch "";
     }
     return std.fmt.bufPrint(buf, "{s}{d}.{d:0>2}", .{ if (white < 0) "-" else "", @abs(white) / 100, @abs(white) % 100 }) catch "";
+}
+
+/// Book moves listed for an opening drill: at least this share (percent).
+const DRILL_MIN_PCT = 5;
+/// Opening drills only from the first moves.
+const DRILL_PLIES = 40;
+
+/// The player's moves while the game was still in opening theory (strong
+/// players' moves, see openings.zig), as JSON for opening drills: the
+/// position, what they played and what strong players play there. Ends with
+/// the move where they left theory (`exit`), or where the opponent did.
+fn writeOpeningMoves(w: *Io.Writer, positions: []const Position, moves: []const Move, evals: []const Eval, user: bb.Color) !void {
+    try w.writeByte('[');
+    defer w.writeByte(']') catch {};
+    const book = openings.Book.embeddedBook() orelse return;
+    var named: ?openings.Name = null;
+    var first = true;
+    for (moves[0..@min(moves.len, DRILL_PLIES)], 0..) |m, i| {
+        const p = &positions[i];
+        if (book.name(p.key)) |n| named = n;
+        const ms = book.moves(p.key);
+        const total = ms.total();
+        if (total < coach.MIN_THEORY) return;
+        var mine: u64 = 0;
+        for (0..ms.len()) |k| {
+            const e = ms.get(k);
+            if (e.move.eql(m)) {
+                mine = e.games();
+                break;
+            }
+        }
+        const exit = mine * 100 < coach.MIN_BOOK_PCT * total;
+        if (p.side != user) {
+            if (exit) return;
+            continue;
+        }
+
+        var sb: [16]u8 = undefined;
+        var ub: [5]u8 = undefined;
+        var fen_buf: [128]u8 = undefined;
+        if (!first) try w.writeByte(',');
+        first = false;
+        try w.print("{{\"ply\":{d},\"move_no\":{d},\"exit\":{},\"fen\":", .{ i, p.fullmove, exit });
+        try writeJsonString(w, p.toFen(&fen_buf));
+        try w.writeAll(",\"played\":");
+        try writeJsonString(w, play.san(p, m, &sb));
+        try w.writeAll(",\"played_uci\":");
+        try writeJsonString(w, m.toUci(&ub));
+        // What the move cost, in winning chances.
+        try w.print(",\"played_pct\":{d:.1},\"drop\":{d:.1},\"total\":{d},\"book\":[", .{ pctOf(mine, total), grade(evals[i].score, evals[i + 1].score).drop, total });
+        for (0..ms.len()) |k| {
+            const e = ms.get(k);
+            if (k > 0 and e.games() * 100 < DRILL_MIN_PCT * total) break;
+            if (k > 0) try w.writeByte(',');
+            try w.writeAll("{\"san\":");
+            try writeJsonString(w, play.san(p, e.move, &sb));
+            try w.writeAll(",\"uci\":");
+            try writeJsonString(w, e.move.toUci(&ub));
+            try w.print(",\"pct\":{d:.1}}}", .{pctOf(e.games(), total)});
+        }
+        try w.writeAll("],\"opening\":");
+        try writeJsonString(w, if (named) |n| n.name else "");
+        try w.writeAll(",\"eco\":");
+        try writeJsonString(w, if (named) |n| n.eco else "");
+        try w.writeByte('}');
+        if (exit) return;
+    }
+}
+
+fn pctOf(n: u64, total: u64) f64 {
+    return @as(f64, @floatFromInt(n)) * 100 / @as(f64, @floatFromInt(@max(total, 1)));
 }
 
 fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
@@ -302,7 +644,10 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
         const label = classifyKind(positions.items, evals, moves.items, i);
         try flags.append(gpa, .{ .ply = i, .cls = cls, .label = label, .drop = drop });
         sum.counts[@intFromEnum(cls)] += 1;
-        if (cls != .inaccuracy) sum.kinds[@intFromEnum(label.kind)] += 1;
+        if (cls != .inaccuracy) {
+            sum.kinds[@intFromEnum(label.kind)] += 1;
+            sum.lessons[@intFromEnum(label.lesson())] += 1;
+        }
     }
     sum.accuracy = if (user_moves > 0) acc_sum / @as(f64, @floatFromInt(user_moves)) else 0;
     const res = in.header("Result");
@@ -337,7 +682,7 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
         const p = &positions.items[f.ply];
         var sb: [16]u8 = undefined;
         var fen_buf: [128]u8 = undefined;
-        var eb: [128]u8 = undefined;
+        var eb: [192]u8 = undefined;
         var bsb: [16]u8 = undefined;
         if (fi > 0) try w.writeByte(',');
         try w.print("{{\"ply\":{d},\"move_no\":{d},\"san\":", .{ f.ply, p.fullmove });
@@ -345,7 +690,21 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
         try w.print(",\"cls\":\"{s}\",\"kind\":\"{s}\",\"piece\":\"{s}\",\"best\":", .{ @tagName(f.cls), @tagName(f.label.kind), if (f.label.piece) |pt| piece_names[pt] else "" });
         try writeJsonString(w, play.san(p, evals[f.ply].best, &bsb));
         try w.writeAll(",\"explain\":");
-        try writeJsonString(w, explain(f.label, play.san(p, evals[f.ply].best, &bsb), &eb));
+        var rsb: [16]u8 = undefined;
+        const reply_san = sanOrEmpty(&positions.items[f.ply + 1], evals[f.ply + 1].best, &rsb);
+        try writeJsonString(w, explain(f.label, play.san(p, evals[f.ply].best, &bsb), reply_san, &eb));
+        try w.writeAll(",\"reply\":");
+        try writeJsonString(w, reply_san);
+        try w.print(",\"lesson\":\"{s}\",\"motif\":\"{s}\",\"against\":{},\"tactic_targets\":[", .{
+            @tagName(f.label.lesson()), @tagName(f.label.tactic.motif), f.label.against,
+        });
+        var first_t = true;
+        for (f.label.tactic.targets) |t| if (t) |pt| {
+            if (!first_t) try w.writeByte(',');
+            first_t = false;
+            try w.print("\"{s}\"", .{piece_names[pt]});
+        };
+        try w.writeByte(']');
         try w.print(",\"drop\":{d:.1},\"win_before\":{d:.1},\"win_after\":{d:.1},\"phase\":\"{s}\",\"fen\":", .{
             f.drop, winPct(evals[f.ply].score), winPct(-evals[f.ply + 1].score), phaseOf(p, f.ply),
         });
@@ -397,7 +756,9 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
         }
         try w.writeAll("]}");
     }
-    try w.writeAll("]}");
+    try w.writeAll("],\"opening_moves\":");
+    try writeOpeningMoves(w, positions.items, moves.items, evals, user_color);
+    try w.writeByte('}');
     try ctx.json[gi].appendSlice(gpa, jw.written());
 
     // Annotated PGN.
@@ -419,9 +780,10 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
         const p = &positions.items[f.ply];
         var sb: [16]u8 = undefined;
         var bsb: [16]u8 = undefined;
-        var xb: [128]u8 = undefined;
+        var xb: [192]u8 = undefined;
+        var rsb: [16]u8 = undefined;
         try o.print(" Biggest moment: {d}{s} {s}, which {s}.", .{
-            p.fullmove, if (p.side == bb.WHITE) "." else "...", play.san(p, moves.items[f.ply], &sb), explain(f.label, play.san(p, evals[f.ply].best, &bsb), &xb),
+            p.fullmove, if (p.side == bb.WHITE) "." else "...", play.san(p, moves.items[f.ply], &sb), explain(f.label, play.san(p, evals[f.ply].best, &bsb), sanOrEmpty(&positions.items[f.ply + 1], evals[f.ply + 1].best, &rsb), &xb),
         });
     }
     try o.writeAll("}\n");
@@ -443,12 +805,13 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
                 .blunder => " $4",
                 .good => "",
             });
-            var xb: [128]u8 = undefined;
+            var xb: [192]u8 = undefined;
             var bsb: [16]u8 = undefined;
             var bsb2: [16]u8 = undefined;
+            var rsb: [16]u8 = undefined;
             const cls_name = ([_][]const u8{ "", "Inaccuracy", "Mistake", "Blunder" })[@intFromEnum(f.cls)];
             try o.print(" {{[%eval {s}] {s}: {s}. Best was {s}.}}", .{
-                pgnEval(evals[i + 1].score, positions.items[i + 1].side, &eb), cls_name, explain(f.label, play.san(p, evals[i].best, &bsb2), &xb), play.san(p, evals[i].best, &bsb),
+                pgnEval(evals[i + 1].score, positions.items[i + 1].side, &eb), cls_name, explain(f.label, play.san(p, evals[i].best, &bsb2), sanOrEmpty(&positions.items[i + 1], evals[i + 1].best, &rsb), &xb), play.san(p, evals[i].best, &bsb),
             });
             // The better line as a variation.
             try o.writeAll(" (");
@@ -572,6 +935,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         acc += sm.accuracy;
         for (0..4) |k| total.counts[k] += sm.counts[k];
         for (0..6) |k| total.kinds[k] += sm.kinds[k];
+        for (0..n_lessons) |k| total.lessons[k] += sm.lessons[k];
     }
 
     {
@@ -589,6 +953,11 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         for (std.enums.values(Kind), 0..) |k, ki| {
             if (ki > 0) try w.writeByte(',');
             try w.print("\"{s}\":{d}", .{ @tagName(k), total.kinds[@intFromEnum(k)] });
+        }
+        try w.writeAll("},\"lessons\":{");
+        for (std.enums.values(Lesson), 0..) |k, ki| {
+            if (ki > 0) try w.writeByte(',');
+            try w.print("\"{s}\":{d}", .{ @tagName(k), total.lessons[@intFromEnum(k)] });
         }
         try w.writeAll("},\"games\":[");
         var first = true;
@@ -612,9 +981,19 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
 
     out.print("\n{d} games: +{d} ={d} -{d}, average accuracy {d:.0}%\n", .{ analysed, wdl[2], wdl[1], wdl[0], if (analysed > 0) acc / @as(f64, @floatFromInt(analysed)) else 0 });
     out.print("{d} blunders, {d} mistakes, {d} inaccuracies\n", .{ total.counts[3], total.counts[2], total.counts[1] });
-    out.print("mistakes and blunders by type: hung a piece {d}, missed a capture {d}, allowed mate {d}, missed mate {d}, bad capture {d}, other {d}\n", .{
-        total.kinds[@intFromEnum(Kind.hung_piece)], total.kinds[@intFromEnum(Kind.missed_capture)], total.kinds[@intFromEnum(Kind.allowed_mate)],
-        total.kinds[@intFromEnum(Kind.missed_mate)], total.kinds[@intFromEnum(Kind.bad_capture)], total.kinds[@intFromEnum(Kind.other)],
-    });
+    // Mistakes and blunders by lesson, most common first.
+    var order: [n_lessons]Lesson = undefined;
+    @memcpy(&order, std.enums.values(Lesson));
+    std.mem.sort(Lesson, &order, &total, struct {
+        fn more(t: *const Summary, a: Lesson, b: Lesson) bool {
+            return t.lessons[@intFromEnum(a)] > t.lessons[@intFromEnum(b)];
+        }
+    }.more);
+    out.print("mistakes and blunders by lesson:", .{});
+    for (order) |l| {
+        const c = total.lessons[@intFromEnum(l)];
+        if (c > 0) out.print(" {s} {d}", .{ @tagName(l), c });
+    }
+    out.print("\n", .{});
     out.print("-> {s}, {s}\n", .{ json_path, pgn_path });
 }

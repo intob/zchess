@@ -50,13 +50,14 @@ pub const Engine = struct {
     /// Coach / CoachLog (see coach.zig): comment on the opponent's moves.
     coach_on: bool = false,
     /// CoachOpponent: also comment on the engine's own moves (threats).
+    /// CoachHints (coach_ctx.hints): the user's loose pieces after them.
     coach_opp: bool = false,
     coach_opp_pending: bool = false,
     coach_log: std.ArrayList(u8) = .empty,
     coach_searcher: ?*search.Searcher = null,
     coach_stop: std.atomic.Value(bool) = .init(false),
     coach_thread: ?std.Thread = null,
-    coach_buf: [2048]u8 = undefined,
+    coach_buf: [3072]u8 = undefined,
     coach_len: usize = 0,
     /// The comment is written (ready) and has gone out (sent): by the coach
     /// thread, by ponderhit, or before bestmove, whichever comes first.
@@ -84,6 +85,7 @@ pub const Engine = struct {
         // Where scripts/ec-sync.py puts the user's reviewed games.
         if (home) |h| try e.coach_games.print(gpa, "{s}/Documents/EnCroissant/zchess", .{h});
         e.coach_ctx.book = openings.Book.embeddedBook();
+        e.loadFocus();
         e.net = try nnue.loadEmbedded(gpa);
         e.prng = std.Random.DefaultPrng.init(@truncate(@as(u96, @bitCast(Io.Clock.real.now(io).toNanoseconds()))));
         try e.setThreads(1);
@@ -197,16 +199,21 @@ pub const Engine = struct {
 
     /// CoachOpponent: what the engine's own move threatens, sent just before
     /// bestmove so that it arrives with the move. Not after a ponder miss.
+    /// With only CoachHints, just the user's loose pieces (when there are any).
     fn coachOpponent(e: *Engine, move: Move) void {
         if (!e.coach_opp_pending) return;
         e.coach_opp_pending = false;
         if (e.pondering.load(.monotonic) or move.data == 0 or e.coach_stop.load(.monotonic)) return;
-        const s = e.coachSearcher() orelse return;
-        e.game_keys.append(e.gpa, e.pos.key) catch return;
-        defer _ = e.game_keys.pop();
-        var buf: [1024]u8 = undefined;
+        var buf: [1536]u8 = undefined;
         var w: Io.Writer = .fixed(&buf);
-        coach.opponent(s, &e.coach_ctx, &e.pos, move, e.game_keys.items, &w) catch return;
+        if (e.coach_opp) {
+            const s = e.coachSearcher() orelse return;
+            e.game_keys.append(e.gpa, e.pos.key) catch return;
+            defer _ = e.game_keys.pop();
+            coach.opponent(s, &e.coach_ctx, &e.pos, move, e.game_keys.items, &w) catch return;
+        } else {
+            if (!(coach.hintsOnly(&e.coach_ctx, &e.pos, move, &w) catch return)) return;
+        }
         if (e.coach_stop.load(.monotonic)) return;
         e.out.print("info string coach: {s}\n", .{w.buffered()});
         e.appendCoachLog(w.buffered(), e.pos.side ^ 1);
@@ -227,6 +234,10 @@ pub const Engine = struct {
         const text = e.coach_buf[0..e.coach_len];
         e.out.print("info string coach: {s}\n", .{text});
         e.appendCoachLog(text, e.prev_pos.side);
+    }
+
+    fn loadFocus(e: *Engine) void {
+        e.coach_ctx.focus = if (e.coach_games.items.len > 0) coach.Focus.load(e.io, e.coach_games.items) else .{};
     }
 
     fn loadRepertoire(e: *Engine) void {
@@ -387,7 +398,7 @@ pub const Engine = struct {
         // is too little to share with the coach.
         const hurried = limits.hard_ms > 0 and limits.hard_ms < 1000;
         e.coach_pending = e.coach_on and !infinite and !hurried and e.last_move.data != 0;
-        e.coach_opp_pending = e.coach_on and e.coach_opp and !infinite and !hurried;
+        e.coach_opp_pending = e.coach_on and (e.coach_opp or e.coach_ctx.hints) and !infinite and !hurried;
         e.search_thread = std.Thread.spawn(.{}, think, .{ e, limits }) catch {
             e.out.print("info string failed to start search\n", .{});
             return;
@@ -436,10 +447,13 @@ pub const Engine = struct {
             e.coach_on = std.ascii.eqlIgnoreCase(value, "true");
         } else if (std.ascii.eqlIgnoreCase(name, "CoachOpponent")) {
             e.coach_opp = std.ascii.eqlIgnoreCase(value, "true");
+        } else if (std.ascii.eqlIgnoreCase(name, "CoachHints")) {
+            e.coach_ctx.hints = std.ascii.eqlIgnoreCase(value, "true");
         } else if (std.ascii.eqlIgnoreCase(name, "CoachGames")) {
             e.coach_games.clearRetainingCapacity();
             if (!std.mem.eql(u8, value, "<none>")) try e.coach_games.appendSlice(e.gpa, value);
             e.coach_rep_stale = true;
+            e.loadFocus();
         } else if (std.ascii.eqlIgnoreCase(name, "CoachUser")) {
             e.coach_user.clearRetainingCapacity();
             if (!std.mem.eql(u8, value, "<auto>")) try e.coach_user.appendSlice(e.gpa, value);
@@ -485,6 +499,7 @@ pub const Engine = struct {
             e.out.print("option name UCI_Elo type spin default 1500 min {d} max {d}\n", .{ strength.MIN_ELO, strength.MAX_ELO });
             e.out.print("option name Coach type check default false\n", .{});
             e.out.print("option name CoachOpponent type check default false\n", .{});
+            e.out.print("option name CoachHints type check default false\n", .{});
             e.out.print("option name CoachLog type string default {s}\n", .{if (e.coach_log.items.len > 0) e.coach_log.items else "<none>"});
             e.out.print("option name CoachGames type string default {s}\n", .{if (e.coach_games.items.len > 0) e.coach_games.items else "<none>"});
             e.out.print("option name CoachUser type string default <auto>\n", .{});
@@ -500,6 +515,7 @@ pub const Engine = struct {
             e.coach_last = 0;
             e.coach_ctx.newGame();
             e.coach_rep_stale = true;
+            e.loadFocus();
         } else if (std.mem.eql(u8, cmd, "position")) {
             e.waitSearch();
             e.setPositionCmd(args);

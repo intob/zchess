@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>fingjoey Game Review</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -53,6 +54,9 @@ p { margin: 0; }
 .eyebrow { font: 500 12px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .lede { font-size: 18px; color: var(--muted); max-width: 62ch; margin-top: 14px; }
 .lede strong { color: var(--ink); font-weight: 600; }
+.habit { margin-top: 16px; max-width: 62ch; padding: 12px 16px; border-left: 3px solid var(--blunder); background: var(--sheet); border-radius: 0 8px 8px 0; font-size: 16px; }
+.habit b { display: block; font: 500 12px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+.srs { display: block; margin-top: 4px; font: 12px var(--mono); color: var(--muted); }
 section { display: grid; gap: 18px; }
 .section-head { display: grid; gap: 6px; }
 .section-head p { color: var(--muted); max-width: 62ch; }
@@ -141,21 +145,25 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
     <div class="eyebrow" id="eyebrow"></div>
     <h1 id="headline"></h1>
     <p class="lede" id="lede"></p>
+    <p class="habit" id="habit" hidden></p>
     <div class="figures" id="figures"></div>
   </header>
 
   <section id="practice" aria-labelledby="practice-title">
     <div class="section-head">
       <h2 id="practice-title">Practice your own mistakes</h2>
-      <p>Every position here comes from one of your games. <b>Find the win</b>: you had something much better than what you played. <b>Spot the threat</b>: your move left something open; find how your opponent punishes it. Click a piece, then the square it should go to.</p>
+      <p>Every position here comes from one of your games. <b>Find the win</b>: you had something much better than what you played. <b>Spot the threat</b>: your move left something open; find how your opponent punishes it. <b>Openings</b>: a position you reached while still in opening theory; play what strong players play. Click a piece, then the square it should go to.</p>
+      <p>Puzzles come back on a schedule. Right first time, a puzzle returns after 1, 3, 7, 16 and then 35 days; missed, it comes back later in the session and again tomorrow. <b>Due</b> is today's set: the reviews that are due plus up to 15 new puzzles, your #1 leak first. Your progress is kept in this browser.</p>
     </div>
     <div class="trainer">
       <div class="board-box"><canvas id="board" width="512" height="512" tabindex="0" aria-label="Chess board"></canvas></div>
       <div class="panel">
         <div class="chips" role="group" aria-label="Puzzle type">
-          <button class="chip" id="f-all" aria-pressed="true" data-filter="all">All</button>
+          <button class="chip" id="f-due" aria-pressed="true" data-filter="due">Due</button>
+          <button class="chip" id="f-all" aria-pressed="false" data-filter="all">All</button>
           <button class="chip" id="f-find" aria-pressed="false" data-filter="find">Find the win</button>
           <button class="chip" id="f-threat" aria-pressed="false" data-filter="threat">Spot the threat</button>
+          <button class="chip" id="f-opening" aria-pressed="false" data-filter="opening">Openings</button>
         </div>
         <div class="kind" id="p-kind"></div>
         <div class="prompt" id="p-prompt"></div>
@@ -174,7 +182,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   <section aria-labelledby="patterns-title">
     <div class="section-head">
       <h2 id="patterns-title">Where the points go</h2>
-      <p>Your mistakes and blunders, sorted by what actually happened on the board. Inaccuracies are left out; they rarely decide games at this level.</p>
+      <p>Your mistakes and blunders, sorted by what actually happened on the board: the piece left hanging, the fork you walked into, the pin you missed. Inaccuracies are left out; they rarely decide games at this level.</p>
     </div>
     <div class="patterns">
       <div class="bars" id="kind-bars"></div>
@@ -201,16 +209,12 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-  const KIND = {
-    hung_piece: "Left a piece hanging",
-    missed_capture: "Missed a capture",
-    allowed_mate: "Allowed checkmate",
-    missed_mate: "Missed checkmate",
-    bad_capture: "Losing capture",
-    other: "Lost ground (pawns, position)",
-  };
+  const LEGACY = { other: "positional" };
+  const lessonOf = (f) => f.lesson || LEGACY[f.kind] || f.kind;
+  const lessonName = (l) => (R.lesson_names && R.lesson_names[l]) || l.replace(/_/g, " ");
   const CLS_MARK = { blunder: "??", mistake: "?", inaccuracy: "?!" };
   const CLS_CLASS = { blunder: "b", mistake: "m", inaccuracy: "i" };
+  const cap = (s) => s[0].toUpperCase() + s.slice(1);
 
   // ---------- header ----------
   const games = R.games.slice().sort((a, b) => (b.date + (b.link || "")).localeCompare(a.date + (a.link || "")));
@@ -221,30 +225,27 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   };
   const allFlags = R.games.flatMap((g) => g.flags.map((f) => ({ ...f, game: g })));
   const serious = allFlags.filter((f) => f.cls !== "inaccuracy");
-  const kindCounts = {};
-  for (const f of serious) kindCounts[f.kind] = (kindCounts[f.kind] || 0) + 1;
-  const kindsSorted = Object.keys(KIND).filter((k) => kindCounts[k]).sort((a, b) => kindCounts[b] - kindCounts[a]);
-  // Lead with the biggest specific habit; "other" is a catch-all, not one habit.
-  const topKind = kindsSorted.find((k) => k !== "other") || kindsSorted[0];
+  const lessonCounts = {};
+  for (const f of serious) lessonCounts[lessonOf(f)] = (lessonCounts[lessonOf(f)] || 0) + 1;
+  const lessonsSorted = Object.keys(lessonCounts).sort((a, b) => lessonCounts[b] - lessonCounts[a]);
+  // Lead with the biggest specific habit (scripts/leaks.py); positional play is too broad to be one.
+  const top = (R.leaks || []).find((t) => t.lesson === R.top_leak);
+  const topLesson = R.top_leak || lessonsSorted.find((k) => k !== "positional") || lessonsSorted[0];
 
   $("eyebrow").textContent = `Chess.com · ${R.user} · ${R.games_analysed} games · ${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])}`;
-  const headlines = {
-    hung_piece: "Most of your mistakes leave a piece undefended.",
-    missed_capture: "You're leaving free material on the board.",
-    allowed_mate: "Watch your king: mates are costing you games.",
-    other: "Your games slip away a little at a time.",
-  };
-  $("headline").textContent = headlines[topKind] || "Here's what's costing you games.";
-  const pct = Math.round((100 * (kindCounts[topKind] || 0)) / Math.max(serious.length, 1));
-  $("lede").innerHTML = `<strong>${kindCounts[topKind]} of your ${serious.length} mistakes and blunders (${pct}%)</strong> came down to one thing: ${esc(KIND[topKind].toLowerCase())}.` + (topKind === "hung_piece"
-    ? " Before every move, check two things: which of your pieces it leaves unprotected, and what your opponent's last move attacks. That habit alone fixes the biggest share of these."
-    : " The puzzles below are built from exactly those moments.");
+  $("headline").textContent = topLesson ? `Your #1 leak: you ${lessonName(topLesson)}.` : "Here's what's costing you games.";
+  if (top) {
+    const next = (R.leaks || []).filter((t) => t !== top && t.lesson !== "positional").slice(0, 2);
+    $("lede").innerHTML = `<strong>${esc(top.text)}</strong>` + (next.length ? ` After that: ${next.map((t) => esc(t.what)).join(", then ")}.` : "") + " The puzzles below come from exactly those moments, this leak first.";
+    $("habit").hidden = false;
+    $("habit").innerHTML = `<b>The habit that fixes it</b>${esc(top.habit)}`;
+  }
   const perGame = (R.totals.blunder / Math.max(R.games_analysed, 1)).toFixed(1);
   $("figures").innerHTML = [
     [`${R.wins}–${R.draws}–${R.losses}`, "won · drawn · lost"],
     [`${Math.round(R.avg_accuracy)}%`, "average accuracy"],
     [perGame, "blunders per game"],
-    [`${R.kinds.missed_capture || 0}`, "free captures missed"],
+    [`${lessonCounts.missed_capture || 0}`, "free captures missed"],
   ].map(([v, l]) => `<div class="figure"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
 
   // ---------- board ----------
@@ -429,34 +430,88 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   }
 
   // ---------- puzzles ----------
-  const puzzles = allFlags
+  const TYPE_OF = R.puzzle_types || { missed_capture: "find", missed_mate: "find", hung_piece: "threat", allowed_mate: "threat" };
+  const tactical = allFlags
     .filter((f) => f.cls !== "inaccuracy")
     .map((f) => {
-      const userWhite = f.game.color === "white";
-      if (f.kind === "missed_capture" || f.kind === "missed_mate") {
-        return { f, type: "find", fen: f.fen, answer: f.best_uci, line: f.best_line, flip: !userWhite };
-      }
-      if (f.kind === "hung_piece" || f.kind === "allowed_mate") {
-        return { f, type: "threat", fen: f.fen_after, answer: f.reply_uci, line: f.refutation, flip: !userWhite };
-      }
+      const flip = f.game.color !== "white";
+      const lesson = lessonOf(f);
+      if (TYPE_OF[lesson] === "find") return { f, lesson, type: "find", fen: f.fen, answers: [f.best_uci], line: f.best_line, flip };
+      if (TYPE_OF[lesson] === "threat") return { f, lesson, type: "threat", fen: f.fen_after, answers: [f.reply_uci], line: f.refutation, flip };
       return null;
     })
-    .filter((p) => p && p.answer && p.answer !== "0000")
+    .filter((p) => p && p.answers[0] && p.answers[0] !== "0000")
     .sort((a, b) => b.f.drop - a.f.drop);
-  puzzles.forEach((p) => (p.id = `${p.f.game.link || p.f.game.date}#${p.f.ply}`));
+  tactical.forEach((p) => (p.id = `${p.f.game.link || p.f.game.date}#${p.f.ply}`));
+  // Opening drills: any book move strong players play, or one of your own that didn't cost anything.
+  const drills = (R.drills || []).map((d) => ({
+    d, lesson: "opening", type: "opening", fen: d.fen, flip: d.color !== "white",
+    answers: [...new Set([...d.book.map((b) => b.uci), ...Object.keys(d.ok_moves || {})])],
+    id: "open:" + d.fen.split(" ").slice(0, 4).join(" "),
+  }));
+  const puzzles = [...tactical, ...drills];
 
-  let solved = new Set();
-  try { solved = new Set(JSON.parse(localStorage.getItem("solved") || "[]")); } catch (e) { /* storage unavailable */ }
-  const saveSolved = () => { try { localStorage.setItem("solved", JSON.stringify([...solved])); } catch (e) { /* ignore */ } };
+  // ---------- spaced repetition ----------
+  // Leitner boxes: right first time moves a puzzle up a box and it comes back
+  // after INTERVALS[box] days; a miss sends it back to box 0, due again today.
+  const INTERVALS = [0, 1, 3, 7, 16, 35];
+  // New puzzles a day, on top of the reviews that are due.
+  const NEW_PER_DAY = 15;
+  const today = () => Math.floor((Date.now() - new Date().getTimezoneOffset() * 60000) / 86400000);
+  let srs = {};
+  try { srs = JSON.parse(localStorage.getItem("srs-v1") || "{}"); } catch (e) { /* storage unavailable */ }
+  const saveSrs = () => { try { localStorage.setItem("srs-v1", JSON.stringify(srs)); } catch (e) { /* ignore */ } };
+  const card = (p) => srs[p.id] || { box: 0, due: 0, seen: 0, missed: 0 };
+  const isReview = (p) => card(p).seen > 0 && card(p).due <= today();
+  function record(p, firstTry) {
+    const c = { ...card(p) };
+    if (!c.seen) c.first = today();
+    c.seen++;
+    if (firstTry) {
+      c.box = Math.min(c.box + 1, INTERVALS.length - 1);
+      c.due = today() + INTERVALS[c.box];
+    } else {
+      c.box = 0;
+      c.due = today();
+      c.missed++;
+    }
+    srs[p.id] = c;
+    saveSrs();
+  }
+  const srsText = (p) => {
+    const c = card(p);
+    if (!c.seen) return "New puzzle";
+    const days = c.due - today();
+    return `Seen ${c.seen}×, box ${c.box} of ${INTERVALS.length - 1}` + (days > 0 ? `, next in ${days} day${days > 1 ? "s" : ""}` : ", due today");
+  };
+  // Today's set: your #1 leak first, then what you know least, then the costliest.
+  const dueOrder = (a, b) => (b.lesson === topLesson) - (a.lesson === topLesson) || card(a).box - card(b).box || (b.f ? b.f.drop : 0) - (a.f ? a.f.drop : 0);
+  // Today's set: reviews that are due, and new puzzles up to NEW_PER_DAY
+  // (counting the ones already started today).
+  function dueToday() {
+    const started = puzzles.filter((p) => card(p).first === today()).length;
+    const fresh = puzzles.filter((p) => !card(p).seen).sort(dueOrder).slice(0, Math.max(0, NEW_PER_DAY - started));
+    return [...puzzles.filter(isReview), ...fresh].sort(dueOrder);
+  }
+  const FILTERS = {
+    due: dueToday,
+    all: () => puzzles,
+    find: () => puzzles.filter((p) => p.type === "find"),
+    threat: () => puzzles.filter((p) => p.type === "threat"),
+    opening: () => puzzles.filter((p) => p.type === "opening"),
+  };
+  const EMPTY = { due: "Nothing due today. Come back tomorrow, or pick another set.", opening: "No opening drills yet: play a few more games in your usual openings." };
 
-  let list = puzzles;
+  let filter = "due";
+  let list = FILTERS.due();
   let idx = 0;
   let state = null; // "solving" | "solved" | "shown" | "review"
+  let tries = 0; // wrong attempts at the current puzzle
+  let requeued = false; // the current miss already sent it to the back of today's set
 
-  const cap = (s) => s[0].toUpperCase() + s.slice(1);
-  const moveText = (line, startNo, whiteFirst) => {
+  const moveText = (line, startNo, whiteFirst, max = 6) => {
     let out = "", no = startNo, white = whiteFirst;
-    line.slice(0, 6).forEach((m, i) => {
+    line.slice(0, max).forEach((m, i) => {
       if (white) out += `${no}. ${m} `;
       else out += (i === 0 ? `${no}… ` : "") + m + " ";
       if (!white) no++;
@@ -473,34 +528,58 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
 
   function loadPuzzle() {
     const p = list[idx];
+    tries = 0;
+    requeued = false;
     if (!p) {
-      $("p-prompt").textContent = "No puzzles of this type yet.";
+      $("p-prompt").textContent = EMPTY[filter] || "No puzzles of this type yet.";
       ["p-kind", "p-context", "p-feedback"].forEach((id) => ($(id).textContent = ""));
       view = null;
+      draw();
       updateButtons();
       return;
     }
-    const f = p.f, g = f.game;
     const toMove = parseFen(p.fen).side;
-    const opp = g.color === "white" ? g.black : g.white;
-    const youPlayed = `${f.move_no}${g.color === "white" ? "." : "…"} ${f.san}`;
-    $("p-kind").innerHTML = `<i style="background:var(--${f.cls})"></i>${p.type === "find" ? "Find the win" : "Spot the threat"} · ${esc(f.cls)}`;
-    $("p-prompt").textContent = p.type === "find"
-      ? `${cap(toMove)} to move. Find the best move.`
-      : `${cap(toMove)} to move. How does your opponent punish your last move?`;
-    $("p-context").innerHTML = `vs ${esc(opp)}, ${esc(fmtDate(g.date))}. ` +
-      (p.type === "find" ? `In the game you played <span class="num">${esc(youPlayed)}</span>.` : `You just played <span class="num">${esc(youPlayed)}</span>.`) +
-      (g.link ? ` <a href="${esc(g.link)}" target="_blank" rel="noopener">Open game</a>` : "");
+    if (p.type === "opening") {
+      const d = p.d;
+      $("p-kind").innerHTML = `<i style="background:var(--accent)"></i>Opening · ${esc(d.opening || "Starting position")}${d.eco ? ` (${esc(d.eco)})` : ""}`;
+      $("p-prompt").textContent = `${cap(toMove)} to move. What do strong players play here?`;
+      const you = Object.entries(d.played_counts).map(([m, n]) => esc(m) + (n > 1 ? ` (${n} games)` : "")).join(", ");
+      $("p-context").innerHTML = `<span class="num">${esc(moveText(d.line, 1, true, 40) || "Move 1")}</span>. You reached this in ${d.games} game${d.games > 1 ? "s" : ""} and played ${you}.`;
+      setView(p.fen, p.flip, {});
+    } else {
+      const f = p.f, g = f.game;
+      const opp = g.color === "white" ? g.black : g.white;
+      const youPlayed = `${f.move_no}${g.color === "white" ? "." : "…"} ${f.san}`;
+      $("p-kind").innerHTML = `<i style="background:var(--${f.cls})"></i>${p.type === "find" ? "Find the win" : "Spot the threat"} · ${esc(lessonName(p.lesson))}`;
+      $("p-prompt").textContent = p.type === "find"
+        ? `${cap(toMove)} to move. Find the best move.`
+        : `${cap(toMove)} to move. How does your opponent punish your last move?`;
+      $("p-context").innerHTML = `vs ${esc(opp)}, ${esc(fmtDate(g.date))}. ` +
+        (p.type === "find" ? `In the game you played <span class="num">${esc(youPlayed)}</span>.` : `You just played <span class="num">${esc(youPlayed)}</span>.`) +
+        (g.link ? ` <a href="${esc(g.link)}" target="_blank" rel="noopener">Open game</a>` : "");
+      const highlight = p.type === "threat"
+        ? [f.played_uci.slice(0, 2), f.played_uci.slice(2, 4)].map((sq) => ({ sq, color: css("--blunder") }))
+        : [];
+      setView(p.fen, p.flip, { highlight });
+    }
+    $("p-context").insertAdjacentHTML("beforeend", `<span class="srs">${esc(srsText(p))}</span>`);
     setFeedback("Drag a piece, or click it and then its destination.", "");
-    const highlight = p.type === "threat"
-      ? [f.played_uci.slice(0, 2), f.played_uci.slice(2, 4)].map((sq) => ({ sq, color: css("--blunder") }))
-      : [];
-    setView(p.fen, p.flip, { highlight });
     state = "solving";
     updateButtons();
   }
 
-  function explainAnswer(p, success) {
+  function explainAnswer(p, success, answer) {
+    if (p.type === "opening") {
+      const d = p.d;
+      const book = d.book.map((b) => `${b.san} (${Math.round(b.pct)}%)`).join(", ");
+      const ok = Object.values(d.ok_moves || {}).filter((m) => !d.book.some((b) => b.san === m));
+      const costly = Object.keys(d.played_counts).filter((m) => !ok.includes(m) && !d.book.some((b) => b.san === m));
+      const played = answer && d.book.find((b) => b.uci === answer);
+      return (success ? (played ? `Yes: <b class="num">${esc(played.san)}</b>.` : "Yes: that's your own move, and it didn't cost you.") : "Not what strong players play here.") +
+        ` In ${d.total.toLocaleString()} games between 2000+ players: <b class="num">${esc(book)}</b>.` +
+        (ok.length ? ` Your ${esc(ok.join(", "))} is fine too.` : "") +
+        (costly.length ? ` Your ${esc(costly.join(", "))} cost you in the game.` : "");
+    }
     const f = p.f;
     const line = moveText(p.line, +p.fen.split(" ")[5], parseFen(p.fen).side === "white");
     const what = p.type === "find"
@@ -509,26 +588,37 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
     return `${what}<span class="line">${esc(line)}</span>`;
   }
 
+  // A miss: back to box 0, and once more at the end of today's set.
+  function missed(p) {
+    if (tries > 1 || requeued) return;
+    record(p, false);
+    if (filter === "due") {
+      list.push(p);
+      requeued = true;
+    }
+  }
+
   // Found it: play the move on the board and mark both squares.
-  function solve(viaDrag) {
+  function solve(viaDrag, answer) {
     const p = list[idx];
     view.selected = null;
-    view.highlight = [p.answer.slice(0, 2), p.answer.slice(2, 4)].map((sq) => ({ sq, color: css("--good") }));
-    playMove(p.answer, !viaDrag);
-    setFeedback(explainAnswer(p, true), "ok");
+    view.highlight = [answer.slice(0, 2), answer.slice(2, 4)].map((sq) => ({ sq, color: css("--good") }));
+    playMove(answer, !viaDrag);
+    setFeedback(explainAnswer(p, true, answer) + `<span class="srs">${tries === 0 ? "Right first time: it comes back later." : "It comes back later today."}</span>`, "ok");
+    if (tries === 0) record(p, true);
     state = "solved";
-    solved.add(p.id);
-    saveSolved();
     updateButtons();
   }
 
   // Gave up: keep the position and draw the answer (and, for missed wins,
   // the move actually played) as arrows.
   function showAnswer() {
-    const p = list[idx], f = p.f;
+    const p = list[idx];
+    tries++;
+    missed(p);
     view.selected = null;
-    view.marks = [{ from: p.answer.slice(0, 2), to: p.answer.slice(2, 4), color: css("--good") }];
-    if (p.type === "find") view.marks.push({ from: f.played_uci.slice(0, 2), to: f.played_uci.slice(2, 4), color: css("--blunder") });
+    view.marks = p.answers.slice(0, 4).map((a) => ({ from: a.slice(0, 2), to: a.slice(2, 4), color: css("--good") }));
+    if (p.type === "find") view.marks.push({ from: p.f.played_uci.slice(0, 2), to: p.f.played_uci.slice(2, 4), color: css("--blunder") });
     setFeedback(explainAnswer(p, false) + (p.type === "find" ? `<span class="line">Green: the better move. Red: what you played.</span>` : ""), "");
     state = "shown";
     draw();
@@ -539,15 +629,22 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
     $("b-prev").disabled = idx <= 0;
     $("b-next").disabled = idx >= list.length - 1;
     $("b-show").disabled = state !== "solving";
-    const done = puzzles.filter((p) => solved.has(p.id)).length;
-    $("p-progress").textContent = list.length ? `${idx + 1} / ${list.length} · ${done} solved` : "";
+    const due = dueToday().length;
+    const learned = puzzles.filter((p) => card(p).box >= 3).length;
+    $("p-progress").textContent = list.length ? `${idx + 1} / ${list.length} · ${due} due · ${learned} learned` : `${due} due · ${learned} learned`;
+    $("f-due").textContent = `Due (${due})`;
   }
 
   function attempt(from, to, viaDrag) {
     const p = list[idx];
-    if (from + to === p.answer.slice(0, 4)) { solve(viaDrag); return; }
+    const answer = p.answers.find((a) => a.slice(0, 4) === from + to);
+    if (answer) { solve(viaDrag, answer); return; }
+    tries++;
+    missed(p);
     view.selected = null;
-    setFeedback("Not that one. Look for captures and checks first, or press Show answer.", "no");
+    setFeedback(p.type === "opening"
+      ? "Not that one. Think about the centre and developing your pieces, or press Show answer."
+      : "Not that one. Look for captures and checks first, or press Show answer.", "no");
     const fb = $("p-feedback");
     fb.classList.remove("shake");
     void fb.offsetWidth;
@@ -607,9 +704,9 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   $("b-next").addEventListener("click", () => { if (idx < list.length - 1) { idx++; loadPuzzle(); } });
   $("b-prev").addEventListener("click", () => { if (idx > 0) { idx--; loadPuzzle(); } });
   document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
-    const filter = chip.dataset.filter;
+    filter = chip.dataset.filter;
     document.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c === chip)));
-    list = filter === "all" ? puzzles : puzzles.filter((p) => p.type === filter);
+    list = FILTERS[filter]();
     idx = 0;
     loadPuzzle();
   }));
@@ -635,12 +732,12 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   }
 
   // ---------- patterns ----------
-  const maxKind = Math.max(...kindsSorted.map((k) => kindCounts[k]), 1);
-  $("kind-bars").innerHTML = kindsSorted.map((k) => `
-    <div class="bar-row${k === topKind ? " top" : ""}">
-      <span>${esc(KIND[k])}</span>
-      <div class="bar-track" role="img" aria-label="${esc(KIND[k])}: ${kindCounts[k]}"><div class="bar-fill" style="width:${(100 * kindCounts[k]) / maxKind}%"></div></div>
-      <span class="num">${kindCounts[k]}</span>
+  const maxKind = Math.max(...lessonsSorted.map((k) => lessonCounts[k]), 1);
+  $("kind-bars").innerHTML = lessonsSorted.map((k) => `
+    <div class="bar-row${k === topLesson ? " top" : ""}">
+      <span>${esc(cap(lessonName(k)))}</span>
+      <div class="bar-track" role="img" aria-label="${esc(cap(lessonName(k)))}: ${lessonCounts[k]}"><div class="bar-fill" style="width:${(100 * lessonCounts[k]) / maxKind}%"></div></div>
+      <span class="num">${lessonCounts[k]}</span>
     </div>`).join("");
   const phases = ["opening", "middlegame", "endgame"];
   const byPhase = Object.fromEntries(phases.map((p) => [p, { blunder: 0, mistake: 0 }]));

@@ -153,6 +153,8 @@ test {
     _ = book;
     _ = @import("pgn.zig");
     _ = review;
+    _ = @import("tactics.zig");
+    _ = @import("coach.zig");
     _ = openings;
     _ = @import("strength.zig");
 }

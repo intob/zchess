@@ -19,13 +19,14 @@ const Move = position.Move;
 
 const help =
     \\usage: zchess play [--black] [--time <seconds>] [--elo <100-3000>] [--net <file|hce>] [--fen <fen>]
-    \\                   [--coach [--games <pgn file or dir> [--user <name>]] [--threats]]
+    \\                   [--coach [--games <pgn file or dir> [--user <name>]] [--threats] [--hints]]
     \\
     \\Enter moves as SAN (e4, Nf3, exd5, O-O, e8=Q) or coordinates (e2e4).
     \\Commands: moves, undo, flip, hint, help, quit
     \\--coach: a comment on each of your moves, judged as `zchess review` would, with
-    \\opening names and theory; --games adds your record from your own games;
-    \\--threats also says what each engine move threatens.
+    \\opening names and theory; --games adds your record from your own games (and the
+    \\focus from the folder's .focus file, see scripts/ec-sync.py); --threats also says
+    \\what each engine move threatens; --hints points out your loose pieces after it.
     \\
 ;
 
@@ -158,6 +159,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var fen: []const u8 = position.START_FEN;
     var coaching = false;
     var threats = false;
+    var hints = false;
     var games_path: []const u8 = "";
     var user: []const u8 = "";
     while (p.next()) |a| {
@@ -169,6 +171,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         else if (p.flag(a, "--fen")) |v| fen = v
         else if (std.mem.eql(u8, a, "--coach")) coaching = true
         else if (std.mem.eql(u8, a, "--threats")) threats = true
+        else if (std.mem.eql(u8, a, "--hints")) hints = true
         else if (p.flag(a, "--games")) |v| games_path = v
         else if (p.flag(a, "--user")) |v| user = v
         else {
@@ -196,7 +199,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         out.print("invalid fen\n", .{});
         return;
     };
-    var coach_ctx = coach.Context{ .book = openings.Book.embeddedBook() };
+    var coach_ctx = coach.Context{ .book = openings.Book.embeddedBook(), .hints = hints };
     var rep: ?openings.Repertoire = null;
     defer if (rep) |*r| r.deinit();
     if (coaching and games_path.len > 0) {
@@ -208,6 +211,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
             coach_ctx.rep = r;
             out.print("coach: {d} of your games as {s}\n", .{ r.games, r.user() });
         }
+        coach_ctx.focus = coach.Focus.load(io, games_path);
     }
     var white_bottom = human == bb.WHITE;
     var last = Move.none;
@@ -301,15 +305,19 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         try keys.append(gpa, pos.key);
         try moves.append(gpa, move);
         if (coaching and pos.side == human) {
-            var cb: [2048]u8 = undefined;
+            var cb: [3072]u8 = undefined;
             var w: Io.Writer = .fixed(&cb);
             coach.comment(engine, &coach_ctx, &pos, move, keys.items, &w) catch {};
             out.print("coach: {s}\n", .{w.buffered()});
         } else if (coaching and threats) {
-            var cb: [1024]u8 = undefined;
+            var cb: [1536]u8 = undefined;
             var w: Io.Writer = .fixed(&cb);
             coach.opponent(engine, &coach_ctx, &pos, move, keys.items, &w) catch {};
             out.print("coach: {s}\n", .{w.buffered()});
+        } else if (coaching and hints) {
+            var cb: [1536]u8 = undefined;
+            var w: Io.Writer = .fixed(&cb);
+            if (coach.hintsOnly(&coach_ctx, &pos, move, &w) catch false) out.print("coach: {s}\n", .{w.buffered()});
         }
         pos = pos.makeMove(move);
         last = move;

@@ -4,9 +4,16 @@ and write one annotated PGN per game into En Croissant's Files folder
 (~/Documents/EnCroissant), where they show up in the Files tab.
 
 Each game gets evaluations on every move, ?!/?/?? marks, the better line as a
-variation, a plain-language label per mistake and a summary comment. Games
-already reviewed are remembered in <out>/.reviewed and skipped next time.
-The mistakes also become a puzzle database (scripts/ec-puzzles.py).
+variation, a plain-language label per mistake (naming the tactic: fork, pin,
+discovered attack, ...) and a summary comment. Games already reviewed are
+remembered in <out>/.reviewed and skipped next time.
+
+Then, from all the games reviewed so far:
+  - your #1 leak goes into <out>/.focus, which the live coach reads (it names it
+    at the start of each game and when you repeat it; scripts/leaks.py);
+  - the mistakes become a puzzle database (scripts/ec-puzzles.py);
+  - the report page with spaced-repetition puzzles and opening drills is
+    rebuilt: data/review/<user>-report.html (scripts/review-report.py).
 
 usage: scripts/ec-sync.py [--user fingjoey] [--months 2] [--threads N]
                           [--nodes 300000] [--out ~/Documents/EnCroissant/zchess] [--all]
@@ -20,6 +27,8 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+
+import leaks
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 UA = {"User-Agent": "zchess-ec-bridge"}
@@ -76,6 +85,13 @@ def recompute_totals(r: dict) -> None:
             if f["cls"] != "inaccuracy":
                 kinds[f["kind"]] = kinds.get(f["kind"], 0) + 1
     r["kinds"] = kinds
+    lessons = {k: 0 for k in r.get("lessons", {})}
+    for g in gs:
+        for f in g["flags"]:
+            if f["cls"] != "inaccuracy":
+                lesson = leaks.lesson_of(f)
+                lessons[lesson] = lessons.get(lesson, 0) + 1
+    r["lessons"] = lessons
 
 
 def main() -> int:
@@ -133,8 +149,18 @@ def main() -> int:
     seen |= {header(g, "Link") for g in new}
     seen_file.write_text("\n".join(sorted(seen)) + "\n")
     print(f"wrote {written} annotated games to {out} (open them from En Croissant's Files tab)")
-    # Turn the mistakes into puzzles (En Croissant's Puzzles tab).
+    # Your #1 leak, for the live coach.
+    review = json.loads(cumulative.read_text())
+    top = leaks.top_leak(leaks.leaks(review))
+    if top:
+        leaks.write_focus(out / ".focus", top)
+        print(f"#1 leak: {leaks.describe(top)}\n   habit: {top['habit']}")
+    # Turn the mistakes into puzzles (En Croissant's Puzzles tab), and rebuild the report.
     subprocess.run([sys.executable, str(ROOT / "scripts" / "ec-puzzles.py"), str(cumulative)], check=True)
+    report = cumulative.with_name(f"{args.user}-report.html")
+    with open(report, "w") as f:
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "review-report.py"), str(cumulative)], stdout=f, check=True)
+    print(f"report with puzzles and opening drills: {report}")
     return 0
 
 

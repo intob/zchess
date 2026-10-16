@@ -5,6 +5,11 @@
 //! names the opening, says whether the move is theory (from strong players'
 //! games), gives an opening-principle tip for weak moves, and how the user
 //! has done from here in their own games (see openings.zig).
+//!
+//! With a focus file (written by scripts/ec-sync.py from the review of the
+//! user's games) the first comment of each game names the user's biggest
+//! leak and the habit that fixes it, and a mistake of that same kind says so.
+//! Hints (optional) point out the user's loose pieces after each engine move.
 
 const std = @import("std");
 const Io = std.Io;
@@ -15,6 +20,7 @@ const review = @import("review.zig");
 const play = @import("play.zig");
 const movegen = @import("movegen.zig");
 const openings = @import("openings.zig");
+const tactics = @import("tactics.zig");
 
 const Position = position.Position;
 const Move = position.Move;
@@ -26,9 +32,9 @@ pub const NODES = 300_000;
 const LINE_LEN = 4;
 
 /// Games through a position for its moves to count as theory.
-const MIN_THEORY = 20;
+pub const MIN_THEORY = 20;
 /// Share of those games (percent) below which a move is a rare sideline.
-const MIN_BOOK_PCT = 2;
+pub const MIN_BOOK_PCT = 2;
 /// Principle tips only in the first moves.
 const TIP_MOVES = 12;
 
@@ -38,11 +44,71 @@ pub const Context = struct {
     rep: ?*const openings.Repertoire = null,
     /// The opening name last announced (its index in the book).
     named: ?u32 = null,
+    /// The user's biggest leak, from the focus file.
+    focus: Focus = .{},
+    focus_said: bool = false,
+    /// Point out the user's loose pieces after each engine move.
+    hints: bool = false,
 
     pub fn newGame(c: *Context) void {
         c.named = null;
+        c.focus_said = false;
     }
 };
+
+/// The focus file: `lesson=`, `text=` and `habit=` lines (see
+/// scripts/leaks.py), kept in the folder of the user's games.
+pub const Focus = struct {
+    buf: [1024]u8 = undefined,
+    lesson_: [2]usize = .{ 0, 0 },
+    text_: [2]usize = .{ 0, 0 },
+    habit_: [2]usize = .{ 0, 0 },
+
+    pub const FILE = ".focus";
+
+    pub fn lesson(f: *const Focus) []const u8 {
+        return f.buf[f.lesson_[0]..][0..f.lesson_[1]];
+    }
+    pub fn text(f: *const Focus) []const u8 {
+        return f.buf[f.text_[0]..][0..f.text_[1]];
+    }
+    pub fn habit(f: *const Focus) []const u8 {
+        return f.buf[f.habit_[0]..][0..f.habit_[1]];
+    }
+
+    pub fn parse(bytes: []const u8) Focus {
+        var f = Focus{};
+        const n = @min(bytes.len, f.buf.len);
+        @memcpy(f.buf[0..n], bytes[0..n]);
+        var start: usize = 0;
+        var it = std.mem.splitScalar(u8, f.buf[0..n], '\n');
+        while (it.next()) |raw| {
+            defer start += raw.len + 1;
+            const line = std.mem.trimEnd(u8, raw, "\r");
+            const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+            const slot = if (std.mem.eql(u8, line[0..eq], "lesson")) &f.lesson_ else if (std.mem.eql(u8, line[0..eq], "text")) &f.text_ else if (std.mem.eql(u8, line[0..eq], "habit")) &f.habit_ else continue;
+            slot.* = .{ start + eq + 1, line.len - eq - 1 };
+        }
+        return f;
+    }
+
+    /// Reads `<dir>/.focus`; empty when there's none (or `dir` is a file).
+    pub fn load(io: Io, dir: []const u8) Focus {
+        var path_buf: [1024]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, FILE }) catch return .{};
+        var buf: [1024]u8 = undefined;
+        const bytes = Io.Dir.cwd().readFile(io, path, &buf) catch return .{};
+        return parse(bytes);
+    }
+};
+
+/// The focus for this game, once, at the start of the first comment.
+fn writeFocus(ctx: *Context, w: *Io.Writer) !void {
+    if (ctx.focus_said) return;
+    ctx.focus_said = true;
+    if (ctx.focus.text().len == 0) return;
+    try w.print("Focus this game: {s} {s} | ", .{ ctx.focus.text(), ctx.focus.habit() });
+}
 
 /// Comment on `move`, played in `before`. `keys` are the positions of the
 /// game up to and including `before` (for repetitions).
@@ -54,8 +120,11 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
 
     var sb: [16]u8 = undefined;
     var bsb: [16]u8 = undefined;
+    var rsb: [16]u8 = undefined;
     const played = play.san(before, move, &sb);
     const best = play.san(before, eb.best, &bsb);
+    const reply = if (ea.best.data != 0) play.san(&after, ea.best, &rsb) else "";
+    try writeFocus(ctx, w);
     try w.print("{d}{s} {s}", .{ before.fullmove, if (before.side == bb.WHITE) "." else "...", played });
 
     var label: review.Label = .{};
@@ -69,7 +138,7 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
         const positions = [2]Position{ before.*, after };
         const evals = [2]review.Eval{ eb, ea };
         label = review.classifyKind(&positions, &evals, &.{move}, 0);
-        var xb: [128]u8 = undefined;
+        var xb: [192]u8 = undefined;
         try w.print("{s} {s}: {s} (win chance {d:.0}% -> {d:.0}%). Better was {s}", .{
             switch (g.cls) {
                 .inaccuracy => "?!",
@@ -81,7 +150,7 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
                 .mistake => "Mistake",
                 else => "Blunder",
             },
-            review.explain(label, best, &xb),
+            review.explain(label, best, reply, &xb),
             review.winPct(eb.score),
             review.winPct(-ea.score),
             best,
@@ -104,9 +173,13 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
         try writeTheory(w, book, before, move);
     }
     // A principle only when the engine also dislikes the move, and nothing
-    // more concrete (a hung piece, a missed capture) explains it.
-    if (g.cls != .good and label.kind == .other) {
+    // more concrete (a hung piece, a tactic) explains it.
+    if (g.cls != .good and label.lesson() == .positional) {
         if (tip(before, move)) |t| try w.print(" Tip: {s}", .{t});
+    }
+    // The user's biggest leak, again.
+    if (g.cls == .mistake or g.cls == .blunder) {
+        if (std.mem.eql(u8, ctx.focus.lesson(), @tagName(label.lesson()))) try w.print(" That's your #1 leak again. {s}", .{ctx.focus.habit()});
     }
     if (ctx.rep) |r| {
         if (r.get(after.key)) |rec| if (rec.games >= 2) try w.print(" You've reached this position in {d} of your games: {d} won, {d} drawn, {d} lost.", .{
@@ -130,6 +203,7 @@ const THREAT_MARGIN = 150;
 pub fn opponent(s: *search.Searcher, ctx: *Context, before: *const Position, move: Move, keys: []const u64, w: *Io.Writer) !void {
     const after = before.makeMove(move);
     var sb: [16]u8 = undefined;
+    try writeFocus(ctx, w);
     try w.print("Opponent played {d}{s} {s}.", .{ before.fullmove, if (before.side == bb.WHITE) "." else "...", play.san(before, move, &sb) });
     if (ctx.book) |*book| {
         try writeOpeningName(w, book, ctx, after.key, keys);
@@ -171,8 +245,48 @@ pub fn opponent(s: *search.Searcher, ctx: *Context, before: *const Position, mov
             try w.writeAll(" No direct threat.");
         }
     }
+    if (ctx.hints) _ = try hints(&after, w);
     try w.writeAll(" Eval: ");
     try writeScore(w, ea.score);
+}
+
+/// Hints alone (no searches), for the engine's `move` played in `before`:
+/// the user's loose pieces afterwards. False when there are none.
+pub fn hintsOnly(ctx: *Context, before: *const Position, move: Move, w: *Io.Writer) !bool {
+    const after = before.makeMove(move);
+    if (tactics.loosePieces(&after, after.side) == 0) return false;
+    var sb: [16]u8 = undefined;
+    try writeFocus(ctx, w);
+    try w.print("After {d}{s} {s}:", .{ before.fullmove, if (before.side == bb.WHITE) "." else "...", play.san(before, move, &sb) });
+    return hints(&after, w);
+}
+
+/// The side to move's loose pieces in `p` (attacked, and undefended or
+/// attacked by something cheaper), most valuable first. False when none.
+pub fn hints(p: *const Position, w: *Io.Writer) !bool {
+    const loose = tactics.loosePieces(p, p.side);
+    if (loose == 0) return false;
+    try w.writeAll(" Watch:");
+    var first = true;
+    var pt: usize = bb.QUEEN + 1;
+    while (pt > bb.KNIGHT) {
+        pt -= 1;
+        var l = loose & p.pieces[pt];
+        while (l != 0) {
+            const sq = bb.popLsb(&l);
+            const attackers = p.attackersTo(sq, p.occupied()) & p.colors[p.side ^ 1];
+            const name = bb.squareName(sq);
+            try w.print("{s} your {s} on {s} is ", .{ if (first) "" else ";", review.piece_names[pt], &name });
+            if (tactics.isDefended(p, sq)) {
+                try w.print("attacked by a {s}", .{review.piece_names[tactics.cheapestType(p, attackers)]});
+            } else {
+                try w.writeAll("attacked and undefended");
+            }
+            first = false;
+        }
+    }
+    try w.writeByte('.');
+    return true;
 }
 
 /// Game history kept for an opponent comment's searches.
@@ -300,4 +414,23 @@ pub fn writeHeader(w: *Io.Writer, io: Io, user: bb.Color) !void {
     try w.print("\n=== zchess coach: new game {d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} UTC, you are {s} ===\n", .{
         yd.year, md.month.numeric(), md.day_index + 1, ds.getHoursIntoDay(), ds.getMinutesIntoHour(), if (user == bb.WHITE) "White" else "Black",
     });
+}
+
+test "focus file" {
+    const f = Focus.parse("lesson=hung_piece\ntext=You hung a piece in 9 of your last 20 games.\r\nhabit=Check what the last move attacks.\n");
+    try std.testing.expectEqualStrings("hung_piece", f.lesson());
+    try std.testing.expectEqualStrings("You hung a piece in 9 of your last 20 games.", f.text());
+    try std.testing.expectEqualStrings("Check what the last move attacks.", f.habit());
+    const empty = Focus.parse("");
+    try std.testing.expectEqualStrings("", empty.text());
+}
+
+test "hints name loose pieces" {
+    const atk = @import("attacks.zig");
+    atk.init();
+    const p = try Position.fromFen("4k3/8/2n5/1b1P4/8/8/8/R3K3 b - - 0 1");
+    var buf: [256]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try std.testing.expect(try hints(&p, &w));
+    try std.testing.expectEqualStrings(" Watch: your knight on c6 is attacked by a pawn.", w.buffered());
 }

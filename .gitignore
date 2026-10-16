@@ -27,3 +27,4 @@ gen*w.log
 zig-out-x86-sprt-*/
 nets/*.done
 exp-*.log
+__pycache__/
