@@ -90,6 +90,13 @@ pub const Engine = struct {
     record_dir: std.ArrayList(u8) = .empty,
     record_pending: bool = false,
     go_clock: [4]i64 = .{ -1, -1, 0, 0 },
+    /// AdaptiveLevel: with Coach on, games are played at the Elo in
+    /// `<GameRecord>/.level` (written by scripts/ec-sync.py from the user's
+    /// results against zchess), whatever UCI_Elo the GUI sends; `level_now`
+    /// for this search (a game's, not analysis).
+    adaptive: bool = true,
+    level: ?u32 = null,
+    level_now: bool = false,
 
     /// `home` is where the coaching log goes by default.
     pub fn init(gpa: std.mem.Allocator, io: Io, out: *Output, home: ?[]const u8) !*Engine {
@@ -100,6 +107,7 @@ pub const Engine = struct {
         // Where scripts/ec-sync.py puts the user's reviewed games.
         if (home) |h| try e.coach_games.print(gpa, "{s}/Documents/EnCroissant/zchess", .{h});
         if (home) |h| try e.record_dir.print(gpa, "{s}/zchess-games", .{h});
+        e.loadLevel();
         e.coach_ctx.book = openings.Book.embeddedBook();
         e.loadFocus();
         e.net = try nnue.loadEmbedded(gpa);
@@ -135,7 +143,7 @@ pub const Engine = struct {
         e.tt.newSearch();
         e.startCoach();
         const main = e.searchers.items[0];
-        if (e.limit_strength) return e.thinkLimited(main, limits);
+        if (e.playElo()) |elo| return e.thinkLimited(main, limits, elo);
         var helpers: [256]?std.Thread = .{null} ** 256;
         for (e.searchers.items[1..], 0..) |s, i| {
             s.setPosition(&e.pos, e.game_keys.items);
@@ -169,9 +177,9 @@ pub const Engine = struct {
 
     /// UCI_LimitStrength: one thread, a small search and a weighted pick
     /// among candidate moves, within the game's time limits.
-    fn thinkLimited(e: *Engine, main: *search.Searcher, limits: search.Limits) void {
+    fn thinkLimited(e: *Engine, main: *search.Searcher, limits: search.Limits, elo: u32) void {
         main.setPosition(&e.pos, e.game_keys.items);
-        const c = strength.choose(main, e.prng.random(), e.elo, limits);
+        const c = strength.choose(main, e.prng.random(), elo, limits, &e.pos, e.game_moves.items);
         while (e.pondering.load(.monotonic) and !e.stop_cmd.load(.monotonic)) {
             e.io.sleep(.fromMilliseconds(2), .awake) catch {};
         }
@@ -179,8 +187,9 @@ pub const Engine = struct {
         e.recordMove(c.result.move, e.coachOpponent(c.result.move));
         var buf: [5]u8 = undefined;
         var pbuf: [5]u8 = undefined;
-        if (main.n_lines > c.line and main.lines[c.line].pv_len >= 2) {
-            e.out.print("bestmove {s} ponder {s}\n", .{ c.result.move.toUci(&buf), main.lines[c.line].pv[1].toUci(&pbuf) });
+        const line = if (c.line) |li| (if (main.n_lines > li and main.lines[li].pv_len >= 2) &main.lines[li] else null) else null;
+        if (line) |l| {
+            e.out.print("bestmove {s} ponder {s}\n", .{ c.result.move.toUci(&buf), l.pv[1].toUci(&pbuf) });
         } else {
             e.out.print("bestmove {s}\n", .{c.result.move.toUci(&buf)});
         }
@@ -270,7 +279,7 @@ pub const Engine = struct {
         r.save(e.gpa, e.io, e.record_dir.items, .{
             .user = user,
             .engine = "zchess",
-            .engine_elo = if (e.limit_strength) e.elo else null,
+            .engine_elo = e.playElo(),
         }) catch |err| {
             e.out.print("info string can't record the game in {s}: {s}\n", .{ e.record_dir.items, @errorName(err) });
         };
@@ -291,6 +300,25 @@ pub const Engine = struct {
         const text = e.coach_buf[0..e.coach_len];
         e.out.print("info string coach: {s}\n", .{text});
         e.appendCoachLog(text, e.prev_pos.side);
+    }
+
+    /// The strength this search plays at (null: full strength).
+    fn playElo(e: *const Engine) ?u32 {
+        if (e.level_now) if (e.level) |l| return l;
+        return if (e.limit_strength) e.elo else null;
+    }
+
+    /// `<GameRecord>/.level`: an Elo on its first line (see `adaptive`).
+    fn loadLevel(e: *Engine) void {
+        e.level = null;
+        if (e.record_dir.items.len == 0) return;
+        var pb: [1024]u8 = undefined;
+        const path = std.fmt.bufPrint(&pb, "{s}/.level", .{e.record_dir.items}) catch return;
+        var buf: [256]u8 = undefined;
+        const bytes = Io.Dir.cwd().readFile(e.io, path, &buf) catch return;
+        const first = std.mem.trim(u8, std.mem.sliceTo(bytes, '\n'), " \r\t");
+        const v = std.fmt.parseInt(u32, first, 10) catch return;
+        e.level = std.math.clamp(v, strength.MIN_ELO, strength.MAX_ELO);
     }
 
     fn loadFocus(e: *Engine) void {
@@ -350,7 +378,7 @@ pub const Engine = struct {
         fw.seekTo(len) catch return;
         const w = &fw.interface;
         if (e.coach_new_game) {
-            coach.writeHeader(w, e.io, user) catch return;
+            coach.writeHeader(w, e.io, user, e.playElo()) catch return;
             e.coach_new_game = false;
         }
         w.print("{s}\n", .{text}) catch return;
@@ -460,6 +488,7 @@ pub const Engine = struct {
         e.coach_pending = e.coach_on and !infinite and !hurried and e.last_move.data != 0;
         e.coach_opp_pending = e.coach_on and (e.coach_opp or e.coach_ctx.hints) and !infinite and !hurried;
         e.record_pending = e.coach_on and !infinite and e.record_dir.items.len > 0;
+        e.level_now = e.coach_on and e.adaptive and !infinite;
         e.go_clock = .{ wtime, btime, winc, binc };
         e.search_thread = std.Thread.spawn(.{}, think, .{ e, limits }) catch {
             e.out.print("info string failed to start search\n", .{});
@@ -526,6 +555,9 @@ pub const Engine = struct {
         } else if (std.ascii.eqlIgnoreCase(name, "GameRecord")) {
             e.record_dir.clearRetainingCapacity();
             if (!std.mem.eql(u8, value, "<none>")) try e.record_dir.appendSlice(e.gpa, value);
+            e.loadLevel();
+        } else if (std.ascii.eqlIgnoreCase(name, "AdaptiveLevel")) {
+            e.adaptive = std.ascii.eqlIgnoreCase(value, "true");
         } else if (std.ascii.eqlIgnoreCase(name, "UseNNUE")) {
             e.use_nnue = std.ascii.eqlIgnoreCase(value, "true");
             try e.setThreads(e.searchers.items.len);
@@ -569,6 +601,7 @@ pub const Engine = struct {
             e.out.print("option name CoachGames type string default {s}\n", .{if (e.coach_games.items.len > 0) e.coach_games.items else "<none>"});
             e.out.print("option name CoachUser type string default <auto>\n", .{});
             e.out.print("option name GameRecord type string default {s}\n", .{if (e.record_dir.items.len > 0) e.record_dir.items else "<none>"});
+            e.out.print("option name AdaptiveLevel type check default true\n", .{});
             e.out.print("uciok\n", .{});
         } else if (std.mem.eql(u8, cmd, "isready")) {
             e.out.print("readyok\n", .{});
@@ -580,6 +613,7 @@ pub const Engine = struct {
             e.coach_new_game = true;
             e.coach_last = 0;
             e.record.active = false;
+            e.loadLevel();
             e.coach_ctx.newGame();
             e.coach_rep_stale = true;
             e.loadFocus();

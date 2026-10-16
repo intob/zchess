@@ -289,7 +289,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
             out.print("\nthinking...\n", .{});
             engine.setPosition(&pos, keys.items);
             const r = if (elo) |level|
-                strength.choose(engine, prng.random(), level, .{ .soft_ms = @divTrunc(think_ms * 6, 10), .hard_ms = think_ms }).result
+                strength.choose(engine, prng.random(), level, .{ .soft_ms = @divTrunc(think_ms * 6, 10), .hard_ms = think_ms }, &pos, moves.items).result
             else
                 engine.search(.{ .soft_ms = @divTrunc(think_ms * 6, 10), .hard_ms = think_ms });
             var sb: [16]u8 = undefined;

@@ -11,6 +11,11 @@ reviewed the same way and also added to the
 "zchess games" database in En Croissant's Databases tab (tools/ec-db, built on
 first use), where you can open them and analyse them with any engine.
 
+It also sets how strong zchess plays you next (<played>/.level, read by the
+engine when Coach and AdaptiveLevel are on): your rating against it, from
+your results at the Elo it played (a game without a result counts by its
+final eval), and the level where you'd score about 45%.
+
 Each game gets evaluations on every move, ?!/?/?? marks, the better line as a
 variation, a plain-language label per mistake (naming the tactic: fork, pin,
 discovered attack, ...) and a summary comment. Games already reviewed are
@@ -29,6 +34,7 @@ usage: scripts/ec-sync.py [--user fingjoey] [--months 2] [--threads N]
 """
 import argparse
 import calendar
+import math
 import json
 import os
 import pathlib
@@ -50,6 +56,14 @@ PLAYED_DB = "zchess games"
 IDLE_SECONDS = 30 * 60
 # Shorter recorded games are aborted starts, not games.
 MIN_PLIES = 6
+# The adaptive level: you should score this much against zchess (a bit
+# under half: hard enough to learn from), starting here before any results,
+# with rating steps of K (bigger for the first games, to find your level).
+TARGET_SCORE = 0.45
+START_LEVEL = 600
+K_FIRST, K_AFTER, FIRST_GAMES = 250, 100, 10
+# A game without a result: lost (or won) if it ended this far behind (ahead).
+DECIDED_CP = 300
 
 
 def get(url: str) -> str:
@@ -129,6 +143,51 @@ def played_games(folder: pathlib.Path, user: str) -> list[str]:
     return games
 
 
+def expected(me: float, them: float) -> float:
+    return 1 / (1 + 10 ** ((them - me) / 400))
+
+
+def update_level(played_dir: pathlib.Path, user: str, review: dict) -> None:
+    """Writes <played>/.level from the finished games against zchess (see
+    the docstring)."""
+    by_link = {g.get("link"): g for g in review.get("games", [])}
+    results = []
+    for game in played_games(played_dir, user):
+        white = header(game, "White") == "zchess"
+        elo = header(game, "WhiteElo" if white else "BlackElo")
+        if not elo:
+            continue  # full strength: says nothing about a level
+        res = header(game, "Result")
+        user_white = not white
+        score = {"1-0": 1.0, "0-1": 0.0, "1/2-1/2": 0.5}.get(res)
+        if score is not None and not user_white:
+            score = 1 - score
+        if score is None:
+            g = by_link.get(header(game, "Link"))
+            if not g or not g.get("evals"):
+                continue
+            final = g["evals"][-1] * (1 if user_white else -1)
+            score = 0.0 if final <= -DECIDED_CP else 1.0 if final >= DECIDED_CP else None
+            if score is None:
+                continue
+        results.append((header(game, "UTCDate") + header(game, "UTCTime"), int(elo), score))
+    results.sort()
+    offset = 400 * math.log10((1 - TARGET_SCORE) / TARGET_SCORE)  # level - rating for TARGET_SCORE
+    rating = (results[0][1] if results else START_LEVEL) - offset
+    for i, (_, elo, score) in enumerate(results):
+        rating += (K_FIRST if i < FIRST_GAMES else K_AFTER) * (score - expected(rating, elo))
+    level = max(100, min(2500, round(rating + offset)))
+    if results:
+        w = sum(s == 1 for *_, s in results); d = sum(s == 0.5 for *_, s in results); l = sum(s == 0 for *_, s in results)
+        why = f"from {len(results)} games at a limited Elo (+{w} ={d} -{l}), your rating against zchess is about {round(rating)}"
+    else:
+        why = "no games at a limited Elo yet: a starting guess"
+    played_dir.mkdir(parents=True, exist_ok=True)
+    (played_dir / ".level").write_text(f"{level}\n# zchess's Elo for your next game (scripts/ec-sync.py): {why}; "
+                                       f"at {level} you'd score about {TARGET_SCORE:.0%}.\n")
+    print(f"zchess plays your next game at Elo {level} ({why})")
+
+
 def ec_db() -> pathlib.Path:
     """tools/ec-db, built if needed (cargo)."""
     crate = ROOT / "tools" / "ec-db"
@@ -191,7 +250,9 @@ def main() -> int:
     played = [g for g in played_games(played_dir, args.user) if args.all or header(g, "Link") not in seen]
     print(f"{len(played)} new finished games against zchess in {played_dir}")
     new += played
+    cumulative = ROOT / "data" / "review" / f"{args.user}-all.json"
     if not new:
+        update_level(played_dir, args.user, json.loads(cumulative.read_text()) if cumulative.exists() else {})
         return 0
     played_links = {header(g, "Link") for g in played}
 
@@ -253,6 +314,7 @@ def main() -> int:
         print(f"#1 leak: {leaks.describe(top)}\n   habit: {top['habit']}")
     # Turn the mistakes into puzzles (En Croissant's Puzzles tab), and rebuild the report.
     subprocess.run([sys.executable, str(ROOT / "scripts" / "ec-puzzles.py"), str(cumulative)], check=True)
+    update_level(played_dir, args.user, review)
     report = cumulative.with_name(f"{args.user}-report.html")
     with open(report, "w") as f:
         subprocess.run([sys.executable, str(ROOT / "scripts" / "review-report.py"), str(cumulative)], stdout=f, check=True)

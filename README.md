@@ -30,9 +30,22 @@ zig build test                # unit tests (perft, NNUE incremental updates, SEE
 UCI options: `Hash`, `Threads`, `EvalFile` (path to a `.nnue`), `UseNNUE`, `MultiPV`,
 `Ponder`, `Move Overhead`, `Clear Hash`, and `UCI_LimitStrength` + `UCI_Elo` (100–3000:
 smaller search, more candidate moves and a weighted random pick at lower ratings;
-`zchess play --elo N` does the same in the terminal).
+`zchess play --elo N` does the same in the terminal). The pick is weighted by how
+natural each move looks too (recaptures, captures, checks, saving an attacked piece,
+developing and castling first; king walks, moving straight back, rook shuffles and early
+queen trips last), and the first moves come from the opening book, weighted by how often
+strong players chose them, for as many moves as a player of that rating knows: so it
+plays like a person who misses things, not an engine making random moves. Against
+human moves (your Chess.com games at 600; Lumbra 2000+ games at 2000) it plays the
+move the human played 21% / 43% of the time, against 15% / 36% before, and its odd
+moves (king walks, straight back, the same rook again) are about as rare as theirs.
+It is worth about 100 Elo at the same setting, so the asked rating is lowered by that
+(new vs old at 1400: -27 ± 40 after).
 `Coach`, `CoachOpponent`, `CoachLog`, `CoachGames`, `CoachUser`: a comment on each of your moves (see Game review).
 `GameRecord`: with `Coach` on, where the games you play against it are kept (see Game review).
+`AdaptiveLevel` (default on): with `Coach` on, games are played at the Elo in `<GameRecord>/.level`,
+which `scripts/ec-sync.py` sets from your results (see Game review), whatever `UCI_Elo` the GUI
+sends; analysis (`go infinite`) stays at full strength.
 Extra commands in UCI mode: `d` (show the board), `eval`, `perft <depth>`.
 
 ## Training pipeline
@@ -218,15 +231,25 @@ turn it off), named by its start time and rewritten after every engine move, wit
 coach's comments on both sides' moves. The engine is never told when you resign, flag
 or mate it, so the result is filled in only when the board decides it (it mates you,
 stalemate, a draw by rule) and is `*` otherwise; a game is over when you start the next
-one (En Croissant starts a new engine process per game; elsewhere a different move list
-or a takeback of more than two moves). `scripts/ec-sync.py` then reviews the finished
-ones (a result, or no move for 30 minutes; under 6 plies is an aborted start) like your
+one (En Croissant starts a new engine process per game; elsewhere `ucinewgame`, another
+start position, or the GUI sending the start of a game; takebacks, however deep, stay in
+the same game). `scripts/ec-sync.py` then reviews the finished
+ones (a result, En Croissant's log says the game ended, or no move for 30 minutes;
+under 6 plies is an aborted start) like your
 Chess.com games, so they count in your leaks, puzzles and report, and adds them to the
 **zchess games** database in En Croissant's Databases tab, where any engine (Stockfish
 too) can analyse them. `tools/ec-db` (Rust, built on first use) writes the database in En
 Croissant's own format, as its PGN import does: the same crate versions, so a move's
 byte (its index among the legal moves) matches; checked against En Croissant's import of
 the Chess.com games, row for row.
+
+The sync also sets how strong zchess plays your next game (`~/zchess-games/.level`, read
+by the engine with `AdaptiveLevel`): your rating against it, from your results at the Elo
+it played (Elo-style steps, 250 for the first 10 games and 100 after; a game without a
+result counts as lost or won if it ended 3 pawns down or up, games at full strength not
+at all), and the level where you'd score about 45%: close games, a bit hard, so the
+coach's comments are about decisions that mattered. It starts at 600. The coach log's
+header for each game says what it played at.
 
 The names and the move tree are one file built by `zchess openings` and embedded by
 `zig build` when `data/openings.bin` exists (`-Dopenings=<file>` for another). The
