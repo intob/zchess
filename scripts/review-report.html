@@ -985,7 +985,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
         <span class="hide-sm">${sparkline(g)}</span>
       </summary>
       <div class="game-body">${flags || '<p class="empty">No mistakes flagged in this game.</p>'}
-        ${g.link ? `<a class="game-link" href="${esc(g.link)}" target="_blank" rel="noopener">Open on Chess.com</a>` : ""}
+        ${g.link ? `<a class="game-link" href="${esc(g.link)}" target="_blank" rel="noopener">${g.link.startsWith("file:") ? "Open game" : "Open on Chess.com"}</a>` : ""}
       </div>
     </details>`;
   }).join("");

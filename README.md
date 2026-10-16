@@ -32,6 +32,7 @@ UCI options: `Hash`, `Threads`, `EvalFile` (path to a `.nnue`), `UseNNUE`, `Mult
 smaller search, more candidate moves and a weighted random pick at lower ratings;
 `zchess play --elo N` does the same in the terminal).
 `Coach`, `CoachOpponent`, `CoachLog`, `CoachGames`, `CoachUser`: a comment on each of your moves (see Game review).
+`GameRecord`: with `Coach` on, where the games you play against it are kept (see Game review).
 Extra commands in UCI mode: `d` (show the board), `eval`, `perft <depth>`.
 
 ## Training pipeline
@@ -209,6 +210,22 @@ Your games come from `CoachGames` (a PGN file or a folder of them; default
 `~/Documents/EnCroissant/zchess`, where `scripts/ec-sync.py` puts them, re-read every
 new game) as `CoachUser` (default: whoever plays in most of them). In the terminal:
 `zchess play --coach --games <pgn or folder> [--user <name>]`.
+
+Your games against zchess: En Croissant doesn't save played games, so with `Coach` on
+the engine keeps each one as a PGN in `GameRecord` (default `~/zchess-games`, `<none>` to
+turn it off), named by its start time and rewritten after every engine move, with the
+coach's comments on both sides' moves. The engine is never told when you resign, flag
+or mate it, so the result is filled in only when the board decides it (it mates you,
+stalemate, a draw by rule) and is `*` otherwise; a game is over when you start the next
+one (En Croissant starts a new engine process per game; elsewhere a different move list
+or a takeback of more than two moves). `scripts/ec-sync.py` then reviews the finished
+ones (a result, or no move for 30 minutes; under 6 plies is an aborted start) like your
+Chess.com games, so they count in your leaks, puzzles and report, and adds them to the
+**zchess games** database in En Croissant's Databases tab, where any engine (Stockfish
+too) can analyse them. `tools/ec-db` (Rust, built on first use) writes the database in En
+Croissant's own format, as its PGN import does: the same crate versions, so a move's
+byte (its index among the legal moves) matches; checked against En Croissant's import of
+the Chess.com games, row for row.
 
 The names and the move tree are one file built by `zchess openings` and embedded by
 `zig build` when `data/openings.bin` exists (`-Dopenings=<file>` for another):

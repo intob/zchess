@@ -155,6 +155,7 @@ test {
     _ = review;
     _ = @import("tactics.zig");
     _ = @import("coach.zig");
+    _ = @import("record.zig");
     _ = openings;
     _ = @import("strength.zig");
 }

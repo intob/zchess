@@ -14,6 +14,7 @@ const Output = @import("output.zig").Output;
 const strength = @import("strength.zig");
 const coach = @import("coach.zig");
 const openings = @import("openings.zig");
+const record = @import("record.zig");
 
 const Position = position.Position;
 const Move = position.Move;
@@ -27,6 +28,9 @@ pub const Engine = struct {
     out: *Output,
     pos: Position,
     game_keys: std.ArrayList(u64) = .empty,
+    /// The `position` command's start position and moves.
+    game_start: Position = undefined,
+    game_moves: std.ArrayList(Move) = .empty,
     tt: TT,
     hash_mb: usize = 64,
     net: ?*nnue.Network = null,
@@ -75,6 +79,17 @@ pub const Engine = struct {
     coach_new_game: bool = true,
     /// Last position + move commented on, so a repeated `go` isn't logged twice.
     coach_last: u64 = 0,
+    /// This search's coach thread judged the user's last move.
+    coach_this_go: bool = false,
+    /// The comment on the engine's own move (CoachOpponent / CoachHints).
+    opp_buf: [1536]u8 = undefined,
+    /// GameRecord (see record.zig): with Coach on, each game played is kept
+    /// as a PGN in this folder; `record_pending` when this search's move
+    /// should be added, `go_clock` its wtime, btime, winc, binc.
+    record: record.Record = .{},
+    record_dir: std.ArrayList(u8) = .empty,
+    record_pending: bool = false,
+    go_clock: [4]i64 = .{ -1, -1, 0, 0 },
 
     /// `home` is where the coaching log goes by default.
     pub fn init(gpa: std.mem.Allocator, io: Io, out: *Output, home: ?[]const u8) !*Engine {
@@ -84,6 +99,7 @@ pub const Engine = struct {
         try e.coach_log.appendSlice(gpa, "zchess-coach.log");
         // Where scripts/ec-sync.py puts the user's reviewed games.
         if (home) |h| try e.coach_games.print(gpa, "{s}/Documents/EnCroissant/zchess", .{h});
+        if (home) |h| try e.record_dir.print(gpa, "{s}/zchess-games", .{h});
         e.coach_ctx.book = openings.Book.embeddedBook();
         e.loadFocus();
         e.net = try nnue.loadEmbedded(gpa);
@@ -139,7 +155,7 @@ pub const Engine = struct {
         e.stop.store(true, .monotonic);
         for (helpers[0 .. e.searchers.items.len - 1]) |h| if (h) |t| t.join();
         e.finishCoach();
-        e.coachOpponent(r.move);
+        e.recordMove(r.move, e.coachOpponent(r.move));
         var buf: [5]u8 = undefined;
         var pbuf: [5]u8 = undefined;
         // Expected reply, so the GUI can ponder on it during the opponent's time.
@@ -160,7 +176,7 @@ pub const Engine = struct {
             e.io.sleep(.fromMilliseconds(2), .awake) catch {};
         }
         e.finishCoach();
-        e.coachOpponent(c.result.move);
+        e.recordMove(c.result.move, e.coachOpponent(c.result.move));
         var buf: [5]u8 = undefined;
         var pbuf: [5]u8 = undefined;
         if (main.n_lines > c.line and main.lines[c.line].pv_len >= 2) {
@@ -180,16 +196,27 @@ pub const Engine = struct {
     /// and a full-strength reply can take a while. When pondering, it waits
     /// for ponderhit (finishCoach), as the move may not be played.
     fn startCoach(e: *Engine) void {
+        e.coach_this_go = false;
         if (!e.coach_pending) return;
         e.coach_pending = false;
         const id = e.prev_pos.key ^ @as(u64, e.last_move.data) *% 0x9E3779B97F4A7C15;
-        if (id == e.coach_last) return;
+        if (id == e.coach_last) {
+            // The same move again (played again after a takeback, or a
+            // repeated `go`): its comment goes to the GUI again, and into the
+            // game record, but not twice into the log.
+            if (e.coach_len > 0 and e.coach_sent.load(.seq_cst) and !e.pondering.load(.monotonic)) {
+                e.out.print("info string coach: {s}\n", .{e.coach_buf[0..e.coach_len]});
+                e.coach_this_go = true;
+            }
+            return;
+        }
         e.coach_last = id;
         const s = e.coachSearcher() orelse return;
         e.coach_len = 0;
         e.coach_ready.store(false, .seq_cst);
         e.coach_sent.store(false, .seq_cst);
         e.coach_thread = std.Thread.spawn(.{}, coachMain, .{ e, s }) catch null;
+        e.coach_this_go = e.coach_thread != null;
     }
 
     fn coachSearcher(e: *Engine) ?*search.Searcher {
@@ -200,23 +227,53 @@ pub const Engine = struct {
     /// CoachOpponent: what the engine's own move threatens, sent just before
     /// bestmove so that it arrives with the move. Not after a ponder miss.
     /// With only CoachHints, just the user's loose pieces (when there are any).
-    fn coachOpponent(e: *Engine, move: Move) void {
-        if (!e.coach_opp_pending) return;
+    /// Returns the comment ("" for none).
+    fn coachOpponent(e: *Engine, move: Move) []const u8 {
+        if (!e.coach_opp_pending) return "";
         e.coach_opp_pending = false;
-        if (e.pondering.load(.monotonic) or move.data == 0 or e.coach_stop.load(.monotonic)) return;
-        var buf: [1536]u8 = undefined;
-        var w: Io.Writer = .fixed(&buf);
+        if (e.pondering.load(.monotonic) or move.data == 0 or e.coach_stop.load(.monotonic)) return "";
+        var w: Io.Writer = .fixed(&e.opp_buf);
         if (e.coach_opp) {
-            const s = e.coachSearcher() orelse return;
-            e.game_keys.append(e.gpa, e.pos.key) catch return;
+            const s = e.coachSearcher() orelse return "";
+            e.game_keys.append(e.gpa, e.pos.key) catch return "";
             defer _ = e.game_keys.pop();
-            coach.opponent(s, &e.coach_ctx, &e.pos, move, e.game_keys.items, &w) catch return;
+            const prev: ?coach.Prev = if (e.last_move.data != 0) .{ .before = &e.prev_pos, .move = e.last_move } else null;
+            coach.opponent(s, &e.coach_ctx, &e.pos, move, prev, e.game_keys.items, &w) catch return "";
         } else {
-            if (!(coach.hintsOnly(&e.coach_ctx, &e.pos, move, &w) catch return)) return;
+            if (!(coach.hintsOnly(&e.coach_ctx, &e.pos, move, &w) catch return "")) return "";
         }
-        if (e.coach_stop.load(.monotonic)) return;
+        if (e.coach_stop.load(.monotonic)) return "";
         e.out.print("info string coach: {s}\n", .{w.buffered()});
         e.appendCoachLog(w.buffered(), e.pos.side ^ 1);
+        return w.buffered();
+    }
+
+    /// GameRecord: adds the engine's `move` (with `comment`) and the user's
+    /// move before it (with the coach's comment) to the game's PGN. Not
+    /// after a ponder miss.
+    fn recordMove(e: *Engine, move: Move, comment: []const u8) void {
+        if (!e.record_pending) return;
+        e.record_pending = false;
+        if (e.pondering.load(.monotonic) or move.data == 0) return;
+        const r = &e.record;
+        const now: i64 = @intCast(@divTrunc(Io.Clock.real.now(e.io).toNanoseconds(), std.time.ns_per_s));
+        const fresh = r.sync(e.gpa, &e.game_start, e.game_moves.items, now) catch return;
+        if (fresh and e.go_clock[0] >= 0 and e.go_clock[1] >= 0) {
+            r.base_ms = @max(e.go_clock[0], e.go_clock[1]);
+            r.inc_ms = if (r.engine == bb.WHITE) e.go_clock[2] else e.go_clock[3];
+        }
+        if (e.coach_this_go and e.coach_len > 0 and e.coach_sent.load(.seq_cst) and r.moves.items.len > 0) {
+            r.commentLast(e.gpa, e.coach_buf[0..e.coach_len]) catch {};
+        }
+        r.push(e.gpa, move, comment) catch return;
+        const user = if (e.coach_user.items.len > 0) e.coach_user.items else if (e.coach_rep) |rep| rep.user() else "You";
+        r.save(e.gpa, e.io, e.record_dir.items, .{
+            .user = user,
+            .engine = "zchess",
+            .engine_elo = if (e.limit_strength) e.elo else null,
+        }) catch |err| {
+            e.out.print("info string can't record the game in {s}: {s}\n", .{ e.record_dir.items, @errorName(err) });
+        };
     }
 
     fn coachMain(e: *Engine, s: *search.Searcher) void {
@@ -324,6 +381,8 @@ pub const Engine = struct {
         } else return;
 
         e.game_keys.clearRetainingCapacity();
+        e.game_moves.clearRetainingCapacity();
+        e.game_start = pos;
         e.last_move = Move.none;
         if (it.next()) |tok| {
             if (std.mem.eql(u8, tok, "moves")) {
@@ -333,6 +392,7 @@ pub const Engine = struct {
                         break;
                     };
                     e.game_keys.append(e.gpa, pos.key) catch {};
+                    e.game_moves.append(e.gpa, m) catch {};
                     e.prev_pos = pos;
                     e.last_move = m;
                     pos = pos.makeMove(m);
@@ -399,6 +459,8 @@ pub const Engine = struct {
         const hurried = limits.hard_ms > 0 and limits.hard_ms < 1000;
         e.coach_pending = e.coach_on and !infinite and !hurried and e.last_move.data != 0;
         e.coach_opp_pending = e.coach_on and (e.coach_opp or e.coach_ctx.hints) and !infinite and !hurried;
+        e.record_pending = e.coach_on and !infinite and e.record_dir.items.len > 0;
+        e.go_clock = .{ wtime, btime, winc, binc };
         e.search_thread = std.Thread.spawn(.{}, think, .{ e, limits }) catch {
             e.out.print("info string failed to start search\n", .{});
             return;
@@ -461,6 +523,9 @@ pub const Engine = struct {
         } else if (std.ascii.eqlIgnoreCase(name, "CoachLog")) {
             e.coach_log.clearRetainingCapacity();
             if (!std.mem.eql(u8, value, "<none>")) try e.coach_log.appendSlice(e.gpa, value);
+        } else if (std.ascii.eqlIgnoreCase(name, "GameRecord")) {
+            e.record_dir.clearRetainingCapacity();
+            if (!std.mem.eql(u8, value, "<none>")) try e.record_dir.appendSlice(e.gpa, value);
         } else if (std.ascii.eqlIgnoreCase(name, "UseNNUE")) {
             e.use_nnue = std.ascii.eqlIgnoreCase(value, "true");
             try e.setThreads(e.searchers.items.len);
@@ -503,6 +568,7 @@ pub const Engine = struct {
             e.out.print("option name CoachLog type string default {s}\n", .{if (e.coach_log.items.len > 0) e.coach_log.items else "<none>"});
             e.out.print("option name CoachGames type string default {s}\n", .{if (e.coach_games.items.len > 0) e.coach_games.items else "<none>"});
             e.out.print("option name CoachUser type string default <auto>\n", .{});
+            e.out.print("option name GameRecord type string default {s}\n", .{if (e.record_dir.items.len > 0) e.record_dir.items else "<none>"});
             e.out.print("uciok\n", .{});
         } else if (std.mem.eql(u8, cmd, "isready")) {
             e.out.print("readyok\n", .{});

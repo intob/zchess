@@ -28,3 +28,4 @@ zig-out-x86-sprt-*/
 nets/*.done
 exp-*.log
 __pycache__/
+tools/ec-db/target/

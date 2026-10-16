@@ -203,11 +203,18 @@ pub const THREAT_NODES = 150_000;
 /// A threat counts when passing would cost the user this much (centipawns).
 const THREAT_MARGIN = 150;
 
+/// The user's move before the opponent's, played in `before`.
+pub const Prev = struct { before: *const Position, move: Move };
+
+/// For saying whether a recapture is an even trade.
+const trade_value = [6]u32{ 1, 3, 3, 5, 9, 0 };
+
 /// Comment on the opponent's `move`, played in `before`: opening name and
-/// theory, what it captures or checks, and what it threatens (the best
+/// theory, what it captures (a trade, when it takes back on the square of
+/// the user's capture `prev`) or checks, and what it threatens (the best
 /// move the opponent would have if the user passed). `keys` are the
 /// positions of the game up to and including `before`.
-pub fn opponent(s: *search.Searcher, ctx: *Context, before: *const Position, move: Move, keys: []const u64, w: *Io.Writer) !void {
+pub fn opponent(s: *search.Searcher, ctx: *Context, before: *const Position, move: Move, prev: ?Prev, keys: []const u64, w: *Io.Writer) !void {
     const after = before.makeMove(move);
     var sb: [16]u8 = undefined;
     try writeFocus(ctx, w);
@@ -216,7 +223,21 @@ pub fn opponent(s: *search.Searcher, ctx: *Context, before: *const Position, mov
         try writeOpeningName(w, book, ctx, after.key, keys);
         try writeTheory(w, book, before, move);
     }
-    if (review.victimOf(before, move)) |v| try w.print(" It takes your {s}.", .{review.piece_names[v]});
+    if (review.victimOf(before, move)) |v| {
+        const names = review.piece_names;
+        const took = if (prev) |p| (if (p.move.to() == move.to()) review.victimOf(p.before, p.move) else null) else null;
+        if (took) |t| {
+            if (t == v) {
+                try w.print(" It takes back: {s}s traded.", .{names[v]});
+            } else if (trade_value[t] == trade_value[v]) {
+                try w.print(" It takes back: your {s} for its {s}, an even trade.", .{ names[v], names[t] });
+            } else if (trade_value[t] > trade_value[v]) {
+                try w.print(" It takes your {s} back, but you took its {s}: you win the trade.", .{ names[v], names[t] });
+            } else {
+                try w.print(" It takes your {s} back, for its {s}: you lose the trade.", .{ names[v], names[t] });
+            }
+        } else try w.print(" It takes your {s}.", .{names[v]});
+    }
     var replies = movegen.MoveList{};
     movegen.generate(&after, &replies, .all);
     if (replies.len == 0) return w.writeAll(if (after.inCheck()) " Checkmate." else " Stalemate.");

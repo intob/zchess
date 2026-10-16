@@ -312,7 +312,9 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         } else if (coaching and threats) {
             var cb: [1536]u8 = undefined;
             var w: Io.Writer = .fixed(&cb);
-            coach.opponent(engine, &coach_ctx, &pos, move, keys.items, &w) catch {};
+            const n = moves.items.len;
+            const prev: ?coach.Prev = if (n >= 2) .{ .before = &history.items[n - 2], .move = moves.items[n - 2] } else null;
+            coach.opponent(engine, &coach_ctx, &pos, move, prev, keys.items, &w) catch {};
             out.print("coach: {s}\n", .{w.buffered()});
         } else if (coaching and hints) {
             var cb: [1536]u8 = undefined;
