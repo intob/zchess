@@ -523,6 +523,64 @@ fn pgnEval(score: i32, side: bb.Color, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s}{d}.{d:0>2}", .{ if (white < 0) "-" else "", @abs(white) / 100, @abs(white) % 100 }) catch "";
 }
 
+/// Blunder-check drills start after this many plies (the first moves are
+/// rarely in doubt).
+const CHECK_FROM_PLY = 6;
+
+/// The player's sound moves that still leave something attacked, as JSON for
+/// the blunder-check drill, where they are mixed with the moves that lost
+/// material: is this move safe? Kept when every attacked piece (not pawns or
+/// the king) is defended and only attacked by pieces worth as much or more,
+/// so counting attackers and defenders shows why it is safe.
+fn writeChecks(w: *Io.Writer, positions: []const Position, moves: []const Move, flags: []const Flag, user: bb.Color) !void {
+    try w.writeByte('[');
+    var first = true;
+    var fi: usize = 0;
+    for (moves, 0..) |m, i| {
+        while (fi < flags.len and flags[fi].ply < i) fi += 1;
+        if (positions[i].side != user or i < CHECK_FROM_PLY) continue;
+        if (fi < flags.len and flags[fi].ply == i) continue;
+        const after = &positions[i + 1];
+        if (after.inCheck()) continue;
+        if (tactics.loosePieces(after, user) != 0) continue;
+        const occ = after.occupied();
+        var attacked: u64 = 0;
+        var pieces = after.colors[user] & ~after.pieces[bb.PAWN] & ~after.pieces[bb.KING];
+        while (pieces != 0) {
+            const sq = bb.popLsb(&pieces);
+            if (after.attackersTo(sq, occ) & after.colors[user ^ 1] != 0) attacked |= bb.bit(sq);
+        }
+        if (attacked == 0) continue;
+        var fen_buf: [128]u8 = undefined;
+        var ub: [5]u8 = undefined;
+        var sb: [16]u8 = undefined;
+        if (!first) try w.writeByte(',');
+        first = false;
+        try w.print("{{\"ply\":{d},\"move_no\":{d},\"san\":", .{ i, positions[i].fullmove });
+        try writeJsonString(w, play.san(&positions[i], m, &sb));
+        try w.writeAll(",\"fen\":");
+        try writeJsonString(w, positions[i].toFen(&fen_buf));
+        try w.writeAll(",\"uci\":");
+        try writeJsonString(w, m.toUci(&ub));
+        try w.writeAll(",\"attacked\":[");
+        var a = attacked;
+        var first_a = true;
+        while (a != 0) {
+            const sq = bb.popLsb(&a);
+            const attackers = after.attackersTo(sq, occ) & after.colors[user ^ 1];
+            const defenders = after.attackersTo(sq, occ) & after.colors[user] & ~bb.bit(sq);
+            const name = bb.squareName(sq);
+            if (!first_a) try w.writeByte(',');
+            first_a = false;
+            try w.print("{{\"sq\":\"{s}\",\"piece\":\"{s}\",\"by\":\"{s}\",\"attackers\":{d},\"defenders\":{d}}}", .{
+                &name, piece_names[bb.pieceType(after.board[sq])], piece_names[tactics.cheapestType(after, attackers)], @popCount(attackers), @popCount(defenders),
+            });
+        }
+        try w.writeAll("]}");
+    }
+    try w.writeByte(']');
+}
+
 /// Book moves listed for an opening drill: at least this share (percent).
 const DRILL_MIN_PCT = 5;
 /// Opening drills only from the first moves.
@@ -758,6 +816,8 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
     }
     try w.writeAll("],\"opening_moves\":");
     try writeOpeningMoves(w, positions.items, moves.items, evals, user_color);
+    try w.writeAll(",\"checks\":");
+    try writeChecks(w, positions.items, moves.items, flags.items, user_color);
     try w.writeByte('}');
     try ctx.json[gi].appendSlice(gpa, jw.written());
 

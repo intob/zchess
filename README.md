@@ -143,7 +143,12 @@ that leads with that leak, and a trainer with puzzles from your own mistakes
 in theory: play what strong players play). Puzzles come back on a spaced
 schedule (1, 3, 7, 16, 35 days when right first time; tomorrow when missed),
 at most 15 new ones a day, your #1 leak first; progress is kept in the
-browser (vector pieces: cburnett, GPLv2+).
+browser (vector pieces: cburnett, GPLv2+). *Blunder check* drills the habit
+itself: a move you played is shown on the board and you say whether it is
+safe or loses something, then show how. Two in five are real mistakes; the
+rest are sound moves that still left a piece attacked (the review JSON's
+`checks`), so the answer takes counting attackers and defenders. Rounds of
+20, misses first next time.
 
 `scripts/ec-sync.py [--user fingjoey]` is the En Croissant bridge: it fetches new
 Chess.com games, reviews them and writes one annotated PGN per game into

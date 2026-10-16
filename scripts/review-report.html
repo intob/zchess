@@ -93,6 +93,11 @@ section { display: grid; gap: 18px; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--sheet); }
 .btn:disabled { opacity: .45; cursor: default; }
 .progress { margin-left: auto; font: 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.verdict { display: flex; flex-wrap: wrap; gap: 10px; }
+.verdict .btn { flex: 1 1 12em; padding: 12px 14px; font-size: 15px; }
+.btn.safe { border-color: var(--good); color: var(--good); }
+.btn.unsafe { border-color: var(--blunder); color: var(--blunder); }
+kbd { font: 500 11px var(--mono); border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; margin-left: 6px; opacity: .7; }
 @media (prefers-reduced-motion: no-preference) { .shake { animation: shake .3s; } }
 @keyframes shake { 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
 
@@ -152,6 +157,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   <section id="practice" aria-labelledby="practice-title">
     <div class="section-head">
       <h2 id="practice-title">Practice your own mistakes</h2>
+      <p><b>Blunder check</b> trains the habit behind most of your lost games: before you let go of a piece, check what your opponent can take. Each position is a move you really played; about two in five lost material and the rest were safe even though something was attacked. Say which, then show how they win it. Twenty a round; aim for 18 right, then aim to answer faster.</p>
       <p>Every position here comes from one of your games. <b>Find the win</b>: you had something much better than what you played. <b>Spot the threat</b>: your move left something open; find how your opponent punishes it. <b>Openings</b>: a position you reached while still in opening theory; play what strong players play. Click a piece, then the square it should go to.</p>
       <p>Puzzles come back on a schedule. Right first time, a puzzle returns after 1, 3, 7, 16 and then 35 days; missed, it comes back later in the session and again tomorrow. <b>Due</b> is today's set: the reviews that are due plus up to 15 new puzzles, your #1 leak first. Your progress is kept in this browser.</p>
     </div>
@@ -160,6 +166,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
       <div class="panel">
         <div class="chips" role="group" aria-label="Puzzle type">
           <button class="chip" id="f-due" aria-pressed="true" data-filter="due">Due</button>
+          <button class="chip" id="f-check" aria-pressed="false" data-filter="check">Blunder check</button>
           <button class="chip" id="f-all" aria-pressed="false" data-filter="all">All</button>
           <button class="chip" id="f-find" aria-pressed="false" data-filter="find">Find the win</button>
           <button class="chip" id="f-threat" aria-pressed="false" data-filter="threat">Spot the threat</button>
@@ -169,6 +176,10 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
         <div class="prompt" id="p-prompt"></div>
         <div class="context" id="p-context"></div>
         <div class="feedback" id="p-feedback" aria-live="polite"></div>
+        <div class="verdict" id="verdict" hidden>
+          <button class="btn safe" id="v-safe">Safe<kbd>S</kbd></button>
+          <button class="btn unsafe" id="v-unsafe">They win something<kbd>U</kbd></button>
+        </div>
         <div class="actions">
           <button class="btn" id="b-prev">Previous</button>
           <button class="btn" id="b-show">Show answer</button>
@@ -451,6 +462,169 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   }));
   const puzzles = [...tactical, ...drills];
 
+  // ---------- blunder check ----------
+  // Moves you played, shown on the board: is it safe, or can your opponent
+  // win something? Unsafe: your mistakes that left something to take (the
+  // "Spot the threat" positions). Safe: sound moves that still left a piece
+  // attacked (zchess review's "checks"), so the answer takes counting.
+  const ROUND = 20, UNSAFE_SHARE = 0.4;
+  const checkGameId = (g) => g.link || g.date;
+  const checkPool = [
+    ...tactical.filter((p) => p.type === "threat").map((p) => ({
+      kind: "check", safe: false, id: "chk:" + p.id, fen: p.f.fen, uci: p.f.played_uci, san: p.f.san, move_no: p.f.move_no,
+      game: p.f.game, f: p.f, answers: p.answers, line: p.line, lesson: p.lesson,
+    })),
+    ...R.games.flatMap((g) => (g.checks || []).map((c) => ({
+      kind: "check", safe: true, id: `chk:${checkGameId(g)}#${c.ply}`, fen: c.fen, uci: c.uci, san: c.san, move_no: c.move_no,
+      game: g, attacked: c.attacked, answers: [],
+    }))),
+  ];
+  let bc = { cards: {}, rounds: [] };
+  try { bc = { ...bc, ...JSON.parse(localStorage.getItem("bc-v1") || "{}") }; } catch (e) { /* storage unavailable */ }
+  const saveBc = () => { try { localStorage.setItem("bc-v1", JSON.stringify(bc)); } catch (e) { /* ignore */ } };
+  const bcCard = (p) => bc.cards[p.id] || { seen: 0, wrong: 0, last: -1 };
+  let round = null; // { right, caught, unsafe, falseAlarms, found, ms: [] }
+  let shownAt = 0;
+
+  // A round: positions you got wrong before first, then ones you haven't
+  // seen, then the longest ago; two in five unsafe, in random order.
+  function newRound() {
+    const pick = (pool, n) => pool
+      .map((p) => ({ p, r: Math.random() }))
+      .sort((a, b) => (bcCard(b.p).wrong > 0) - (bcCard(a.p).wrong > 0) || (bcCard(a.p).seen > 0) - (bcCard(b.p).seen > 0) || bcCard(a.p).last - bcCard(b.p).last || a.r - b.r)
+      .slice(0, n).map((x) => x.p);
+    const unsafe = pick(checkPool.filter((p) => !p.safe), Math.round(ROUND * UNSAFE_SHARE));
+    const safe = pick(checkPool.filter((p) => p.safe), ROUND - unsafe.length);
+    const items = [...unsafe, ...safe];
+    for (let i = items.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [items[i], items[j]] = [items[j], items[i]]; }
+    round = { right: 0, caught: 0, unsafe: unsafe.length, falseAlarms: 0, found: 0, ms: [] };
+    return items;
+  }
+
+  const timesWord = (n) => (n === 1 ? "once" : n === 2 ? "twice" : `${n} times`);
+  const VALUE = { pawn: 1, knight: 3, bishop: 3, rook: 5, queen: 9, king: 100 };
+  // Why a safe move is safe, from what is attacked and how often it is defended.
+  function whySafe(p) {
+    return p.attacked.map((a) => {
+      const by = a.attackers > 1 ? `${a.attackers} pieces (the cheapest a ${a.by})` : `a ${a.by}`;
+      const why = a.by === "king" && a.attackers === 1 ? "their king can't take a defended piece"
+        : VALUE[a.by] > VALUE[a.piece] ? `taking it would give up their ${a.by} for your ${a.piece}`
+        : VALUE[a.by] === VALUE[a.piece] ? "taking it is only a trade"
+        : "it's defended enough";
+      return `Your ${a.piece} on ${a.sq} is attacked by ${by} and defended ${timesWord(a.defenders)}: ${why}.`;
+    }).join(" ");
+  }
+
+  function loadCheck() {
+    const p = list[idx];
+    tries = 0;
+    $("verdict").hidden = !p;
+    if (!p) {
+      $("p-prompt").textContent = checkPool.length ? "Nothing to check." : "No blunder-check positions yet: run scripts/ec-sync.py --all to re-review your games.";
+      ["p-kind", "p-context", "p-feedback"].forEach((id) => ($(id).textContent = ""));
+      view = null;
+      draw();
+      updateButtons();
+      return;
+    }
+    const g = p.game;
+    const opp = g.color === "white" ? g.black : g.white;
+    const youPlayed = `${p.move_no}${g.color === "white" ? "." : "…"} ${p.san}`;
+    $("p-kind").innerHTML = `<i style="background:var(--accent)"></i>Blunder check · ${idx + 1} of ${list.length}`;
+    $("p-prompt").innerHTML = `You play <span class="num">${esc(youPlayed)}</span>. Is it safe?`;
+    $("p-context").innerHTML = `vs ${esc(opp)}, ${esc(fmtDate(g.date))}. Look at everything your opponent can capture or check after this move.`;
+    setView(p.fen, g.color !== "white", {});
+    playMove(p.uci, true);
+    view.highlight = [p.uci.slice(0, 2), p.uci.slice(2, 4)].map((sq) => ({ sq, color: css("--accent") }));
+    view.side = g.color === "white" ? "black" : "white";
+    draw();
+    setFeedback("Safe, or can they win something?", "");
+    state = "verdict";
+    shownAt = performance.now();
+    updateButtons();
+  }
+
+  function recordCheck(p, right) {
+    const c = { ...bcCard(p) };
+    c.seen++;
+    if (!right) c.wrong++;
+    else if (c.wrong > 0) c.wrong--;
+    c.last = Date.now();
+    bc.cards[p.id] = c;
+    saveBc();
+  }
+
+  function verdict(saysSafe) {
+    if (state !== "verdict") return;
+    const p = list[idx];
+    round.ms.push(performance.now() - shownAt);
+    const right = saysSafe === p.safe;
+    if (right) round.right++;
+    if (!p.safe && right) round.caught++;
+    if (p.safe && !right) round.falseAlarms++;
+    recordCheck(p, right);
+    if (!p.safe && right) {
+      setFeedback("Right, it isn't safe. Now show how they win it: play their move.", "ok");
+      state = "solving";
+    } else if (p.safe) {
+      setFeedback(`${right ? "Right, it's safe." : "It's safe."} ${esc(whySafe(p))}`, right ? "ok" : "no");
+      finishCheck();
+    } else {
+      revealCheck(`It isn't safe: <b class="num">${esc(p.line[0])}</b>. Your move ${esc(p.f.explain)}.`, "no");
+    }
+    updateButtons();
+  }
+
+  function revealCheck(html, cls) {
+    const p = list[idx];
+    const line = moveText(p.line, +p.f.fen_after.split(" ")[5], parseFen(p.f.fen_after).side === "white");
+    view.selected = null;
+    view.marks = [{ from: p.answers[0].slice(0, 2), to: p.answers[0].slice(2, 4), color: css("--blunder") }];
+    setFeedback(`${html}<span class="line">${esc(line)}</span>`, cls);
+    draw();
+    finishCheck();
+  }
+
+  function finishCheck() {
+    state = "done";
+    if (idx === list.length - 1) {
+      const avg = round.ms.reduce((a, b) => a + b, 0) / Math.max(round.ms.length, 1) / 1000;
+      bc.rounds.push({ day: today(), right: round.right, total: list.length, sec: +avg.toFixed(1) });
+      bc.rounds = bc.rounds.slice(-30);
+      saveBc();
+      const past = bc.rounds.slice(-6, -1).map((r) => `${r.right}/${r.total}`).join(", ");
+      $("p-feedback").insertAdjacentHTML("beforeend", `<span class="line">Round done: <b>${round.right} of ${list.length}</b> right. ` +
+        `You caught ${round.caught} of ${round.unsafe} blunders and found the punishment ${round.found} times; ` +
+        `${round.falseAlarms} safe move${round.falseAlarms === 1 ? "" : "s"} called unsafe. ${avg.toFixed(1)} s a decision.` +
+        (past ? ` Earlier rounds: ${past}.` : "") + `</span>`);
+    }
+    updateButtons();
+  }
+
+  function attemptCheck(from, to, viaDrag) {
+    const p = list[idx];
+    const answer = p.answers.find((a) => a.slice(0, 4) === from + to);
+    if (answer) {
+      round.found++;
+      view.selected = null;
+      view.highlight = [answer.slice(0, 2), answer.slice(2, 4)].map((sq) => ({ sq, color: css("--good") }));
+      playMove(answer, !viaDrag);
+      const line = moveText(p.line, +p.f.fen_after.split(" ")[5], parseFen(p.f.fen_after).side === "white");
+      setFeedback(`Exactly: <b class="num">${esc(p.line[0])}</b>. Your move ${esc(p.f.explain)}.<span class="line">${esc(line)}</span>`, "ok");
+      finishCheck();
+      return;
+    }
+    tries++;
+    view.selected = null;
+    if (tries >= 2) { revealCheck(`Their move was <b class="num">${esc(p.line[0])}</b>. Your move ${esc(p.f.explain)}.`, ""); return; }
+    setFeedback("Not that one. Captures and checks first. One more try.", "no");
+    const fb = $("p-feedback");
+    fb.classList.remove("shake");
+    void fb.offsetWidth;
+    fb.classList.add("shake");
+    draw();
+  }
+
   // ---------- spaced repetition ----------
   // Leitner boxes: right first time moves a puzzle up a box and it comes back
   // after INTERVALS[box] days; a miss sends it back to box 0, due again today.
@@ -499,6 +673,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
     find: () => puzzles.filter((p) => p.type === "find"),
     threat: () => puzzles.filter((p) => p.type === "threat"),
     opening: () => puzzles.filter((p) => p.type === "opening"),
+    check: newRound,
   };
   const EMPTY = { due: "Nothing due today. Come back tomorrow, or pick another set.", opening: "No opening drills yet: play a few more games in your usual openings." };
 
@@ -527,6 +702,8 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   }
 
   function loadPuzzle() {
+    if (filter === "check") { loadCheck(); return; }
+    $("verdict").hidden = true;
     const p = list[idx];
     tries = 0;
     requeued = false;
@@ -614,6 +791,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   // the move actually played) as arrows.
   function showAnswer() {
     const p = list[idx];
+    if (p.kind === "check") { revealCheck(`Their move was <b class="num">${esc(p.line[0])}</b>. Your move ${esc(p.f.explain)}.`, ""); return; }
     tries++;
     missed(p);
     view.selected = null;
@@ -626,6 +804,16 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   }
 
   function updateButtons() {
+    if (filter === "check") {
+      $("b-prev").disabled = true;
+      $("b-show").disabled = state !== "solving";
+      $("b-next").disabled = state !== "done" && state !== "review" && list.length > 0;
+      $("b-next").textContent = state === "review" ? "Back to the drill" : list.length && idx < list.length - 1 ? "Next position" : "New round";
+      $("v-safe").disabled = $("v-unsafe").disabled = state !== "verdict";
+      $("p-progress").textContent = list.length ? `${idx + 1} / ${list.length} · ${round.right} right` : "";
+      return;
+    }
+    $("b-next").textContent = "Next puzzle";
     $("b-prev").disabled = idx <= 0;
     $("b-next").disabled = idx >= list.length - 1;
     $("b-show").disabled = state !== "solving";
@@ -637,6 +825,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
 
   function attempt(from, to, viaDrag) {
     const p = list[idx];
+    if (p.kind === "check") { attemptCheck(from, to, viaDrag); return; }
     const answer = p.answers.find((a) => a.slice(0, 4) === from + to);
     if (answer) { solve(viaDrag, answer); return; }
     tries++;
@@ -701,7 +890,19 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   canvas.addEventListener("pointercancel", () => { drag = null; draw(); });
 
   $("b-show").addEventListener("click", showAnswer);
-  $("b-next").addEventListener("click", () => { if (idx < list.length - 1) { idx++; loadPuzzle(); } });
+  $("b-next").addEventListener("click", () => {
+    if (filter === "check" && state === "review") { loadPuzzle(); return; }
+    if (filter === "check" && idx >= list.length - 1) { list = newRound(); idx = 0; loadPuzzle(); return; }
+    if (idx < list.length - 1) { idx++; loadPuzzle(); }
+  });
+  $("v-safe").addEventListener("click", () => verdict(true));
+  $("v-unsafe").addEventListener("click", () => verdict(false));
+  document.addEventListener("keydown", (e) => {
+    if (filter !== "check" || e.metaKey || e.ctrlKey || e.altKey || /input|textarea/i.test(e.target.tagName)) return;
+    if (e.key === "s" || e.key === "S") verdict(true);
+    else if (e.key === "u" || e.key === "U") verdict(false);
+    else if ((e.key === "Enter" || e.key === "ArrowRight") && state === "done") { e.preventDefault(); $("b-next").click(); }
+  });
   $("b-prev").addEventListener("click", () => { if (idx > 0) { idx--; loadPuzzle(); } });
   document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
     filter = chip.dataset.filter;
@@ -722,6 +923,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
       ],
     });
     state = "review";
+    $("verdict").hidden = true;
     $("p-kind").innerHTML = `<i style="background:var(--${f.cls === "inaccuracy" ? "inacc" : f.cls})"></i>From the game · ${esc(f.cls)}`;
     $("p-prompt").textContent = `${f.move_no}${g.color === "white" ? "." : "…"} ${f.san}${CLS_MARK[f.cls]}`;
     $("p-context").innerHTML = `vs ${esc(opp)}, ${esc(fmtDate(g.date))}. Red: what you played. Green: the better move.` + (g.link ? ` <a href="${esc(g.link)}" target="_blank" rel="noopener">Open game</a>` : "");
