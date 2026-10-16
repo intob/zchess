@@ -143,7 +143,7 @@ def recompute_totals(r: dict) -> None:
     """Top-level summary fields from the per-game data (after merging batches)."""
     gs = r["games"]
     r["games_analysed"] = len(gs)
-    for key, res in (("wins", "win"), ("draws", "draw"), ("losses", "loss")):
+    for key, res in (("wins", "win"), ("draws", "draw"), ("losses", "loss"), ("unknown", "unknown")):
         r[key] = sum(g["result"] == res for g in gs)
     r["avg_accuracy"] = sum(g["accuracy"] for g in gs) / max(len(gs), 1)
     r["totals"] = {k: sum(g["counts"][k] for g in gs) for k in ("inaccuracy", "mistake", "blunder")}

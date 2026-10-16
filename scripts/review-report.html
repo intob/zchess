@@ -126,7 +126,7 @@ details.game > summary::-webkit-details-marker { display: none; }
 .side { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--piece-line); margin-right: 6px; vertical-align: -1px; }
 .side.w { background: var(--piece-white); } .side.b { background: var(--piece-black); }
 .result { font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
-.result.win { color: var(--good); } .result.loss { color: var(--blunder); } .result.draw { color: var(--muted); }
+.result.win { color: var(--good); } .result.loss { color: var(--blunder); } .result.draw, .result.unknown { color: var(--muted); }
 .marks { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
 .marks .b { color: var(--blunder); } .marks .m { color: var(--mistake); } .marks .i { color: var(--inacc); }
 .spark { width: 100%; height: 34px; display: block; }
@@ -253,7 +253,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
   }
   const perGame = (R.totals.blunder / Math.max(R.games_analysed, 1)).toFixed(1);
   $("figures").innerHTML = [
-    [`${R.wins}–${R.draws}–${R.losses}`, "won · drawn · lost"],
+    [`${R.wins}–${R.draws}–${R.losses}`, "won · drawn · lost" + (R.unknown ? ` · ${R.unknown} without a result` : "")],
     [`${Math.round(R.avg_accuracy)}%`, "average accuracy"],
     [perGame, "blunders per game"],
     [`${lessonCounts.missed_capture || 0}`, "free captures missed"],
@@ -979,7 +979,7 @@ footer code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere
       <summary>
         <span class="num">${esc(fmtDate(g.date))}</span>
         <span class="opp"><span class="side ${g.color === "white" ? "w" : "b"}" title="You played ${g.color}"></span>${esc(opp)} <small>${esc(oppElo)}</small></span>
-        <span class="result ${g.result}">${g.result}</span>
+        <span class="result ${g.result}">${g.result === "unknown" ? "no result" : g.result}</span>
         <span class="num hide-sm">${Math.round(g.accuracy)}%</span>
         <span class="marks hide-sm"><span class="b">${c.blunder}??</span> <span class="m">${c.mistake}?</span> <span class="i">${c.inaccuracy}?!</span></span>
         <span class="hide-sm">${sparkline(g)}</span>

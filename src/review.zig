@@ -37,6 +37,9 @@ const help =
 ;
 
 pub const Class = enum { good, inaccuracy, mistake, blunder };
+
+/// Summary.result in the JSON and the console.
+const result_names = [_][]const u8{ "loss", "draw", "win", "unknown" };
 pub const Kind = enum { other, hung_piece, missed_capture, missed_mate, allowed_mate, bad_capture };
 
 /// What a flagged move teaches: its kind, or for `.other` the tactic behind
@@ -189,7 +192,7 @@ const Ctx = struct {
 
 const Summary = struct {
     analysed: bool = false,
-    result: u8 = 1, // 0 loss, 1 draw, 2 win (user's point of view)
+    result: u8 = 1, // 0 loss, 1 draw, 2 win (user's point of view), 3 unknown ("*": unfinished, or a game against zchess the engine never saw end)
     accuracy: f64 = 0,
     counts: [4]u32 = .{ 0, 0, 0, 0 },
     kinds: [6]u32 = .{0} ** 6,
@@ -730,7 +733,7 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
     }
     sum.accuracy = if (user_moves > 0) acc_sum / @as(f64, @floatFromInt(user_moves)) else 0;
     const res = in.header("Result");
-    sum.result = if (std.mem.eql(u8, res, "1/2-1/2")) 1 else if (std.mem.eql(u8, res, if (user_white) "1-0" else "0-1")) 2 else if (std.mem.eql(u8, res, "*")) 1 else 0;
+    sum.result = if (std.mem.eql(u8, res, "1/2-1/2")) 1 else if (std.mem.eql(u8, res, if (user_white) "1-0" else "0-1")) 2 else if (std.mem.eql(u8, res, "*") or res.len == 0) 3 else 0;
 
     // JSON fragment.
     var jw: Io.Writer.Allocating = .init(gpa);
@@ -743,7 +746,7 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
         try w.writeAll(",");
     }
     try w.print("\"color\":\"{s}\",\"result\":\"{s}\",\"accuracy\":{d:.1},\"counts\":{{\"inaccuracy\":{d},\"mistake\":{d},\"blunder\":{d}}},", .{
-        if (user_white) "white" else "black", ([_][]const u8{ "loss", "draw", "win" })[sum.result], sum.accuracy, sum.counts[1], sum.counts[2], sum.counts[3],
+        if (user_white) "white" else "black", result_names[sum.result], sum.accuracy, sum.counts[1], sum.counts[2], sum.counts[3],
     });
     try w.writeAll("\"moves\":[");
     for (moves.items, 0..) |m, i| {
@@ -918,7 +921,7 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
     const done = ctx.done.fetchAdd(1, .monotonic) + 1;
     const opp = if (user_white) in.header("Black") else in.header("White");
     ctx.out.print("[{d}/{d}] {s} vs {s}: {s}, accuracy {d:.0}%, {d} blunders, {d} mistakes, {d} inaccuracies\n", .{
-        done, ctx.inputs.len, in.header("Date"), opp, ([_][]const u8{ "loss", "draw", "win" })[sum.result], sum.accuracy, sum.counts[3], sum.counts[2], sum.counts[1],
+        done, ctx.inputs.len, in.header("Date"), opp, result_names[sum.result], sum.accuracy, sum.counts[3], sum.counts[2], sum.counts[1],
     });
 }
 
@@ -1007,7 +1010,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     // Totals.
     var total = Summary{};
     var analysed: usize = 0;
-    var wdl = [3]u32{ 0, 0, 0 };
+    var wdl = [4]u32{ 0, 0, 0, 0 };
     var acc: f64 = 0;
     for (ctx.summaries) |sm| {
         if (!sm.analysed) continue;
@@ -1027,8 +1030,8 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         const w = &fw.interface;
         try w.writeAll("{\"user\":");
         try writeJsonString(w, user);
-        try w.print(",\"nodes\":{d},\"games_analysed\":{d},\"wins\":{d},\"draws\":{d},\"losses\":{d},\"avg_accuracy\":{d:.1},", .{
-            nodes, analysed, wdl[2], wdl[1], wdl[0], if (analysed > 0) acc / @as(f64, @floatFromInt(analysed)) else 0,
+        try w.print(",\"nodes\":{d},\"games_analysed\":{d},\"wins\":{d},\"draws\":{d},\"losses\":{d},\"unknown\":{d},\"avg_accuracy\":{d:.1},", .{
+            nodes, analysed, wdl[2], wdl[1], wdl[0], wdl[3], if (analysed > 0) acc / @as(f64, @floatFromInt(analysed)) else 0,
         });
         try w.print("\"totals\":{{\"inaccuracy\":{d},\"mistake\":{d},\"blunder\":{d}}},\"kinds\":{{", .{ total.counts[1], total.counts[2], total.counts[3] });
         for (std.enums.values(Kind), 0..) |k, ki| {
@@ -1060,7 +1063,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         try fw.interface.flush();
     }
 
-    out.print("\n{d} games: +{d} ={d} -{d}, average accuracy {d:.0}%\n", .{ analysed, wdl[2], wdl[1], wdl[0], if (analysed > 0) acc / @as(f64, @floatFromInt(analysed)) else 0 });
+    out.print("\n{d} games: +{d} ={d} -{d} ({d} without a result), average accuracy {d:.0}%\n", .{ analysed, wdl[2], wdl[1], wdl[0], wdl[3], if (analysed > 0) acc / @as(f64, @floatFromInt(analysed)) else 0 });
     out.print("{d} blunders, {d} mistakes, {d} inaccuracies\n", .{ total.counts[3], total.counts[2], total.counts[1] });
     // Mistakes and blunders by lesson, most common first.
     var order: [n_lessons]Lesson = undefined;
