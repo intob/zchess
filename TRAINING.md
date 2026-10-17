@@ -188,6 +188,18 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
   2×depth, double extension below margin −20 off the PV), vs conthist, SPRT'd on
   bitch-box: **+36.6 ± 12.0, H1** at 1372 games (+391 =734 −247).
   Merged 2026-10-12.
+- [x] Speed, same search (2026-10-18, branch `perf/speed`): bench node counts and
+  moves are identical to before (depths 8–15, NNUE and HCE), so no SPRT needed.
+  On the M2 Pro: **1.42× fewer cycles** on bench 14, 2.39M → 3.20M nps on bench 15
+  (datagen paused, cycle counts from `/usr/bin/time -l`). What did it:
+  the accumulator update gets a comptime kernel per change shape (quiet 1+1,
+  capture 1+2, castling 2+2), so the row loops unroll instead of reloading counts
+  and pointers per chunk; the move picker keeps its best score in a register (it
+  was 21% of the time, a load on every comparison); scoring puts the TT move
+  first; qsearch and capture pruning reuse scoring's SEE result; the output
+  dot product runs two sums. Tried and dropped: comptime side-to-move movegen
+  (−2%, code size), vectorised or packed-key pickers (slower than the scalar
+  one), both perspectives in one update or eval loop, prefetching the weight rows.
 
 ### Loss power, king buckets, longer schedule (started 2026-10-12 18:52, Mac + bitch-box)
 New in the trainer and engine:

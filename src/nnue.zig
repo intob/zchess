@@ -98,7 +98,8 @@ pub const Network = struct {
 pub const embedded: ?[]const u8 = if (build_options.has_net) @embedFile("default_net") else null;
 
 comptime {
-    if (HIDDEN % LANES != 0) @compileError("-Dhidden must be a multiple of 16");
+    // screluDot takes two vectors a step.
+    if (HIDDEN % (2 * LANES) != 0) @compileError("-Dhidden must be a multiple of 32");
     if (embedded) |e| if (e.len != Network.file_size)
         @compileError("the -Dnet network doesn't match -Dhidden (wrong layer size)");
 }
@@ -176,26 +177,39 @@ fn refreshPerspective(net: *const Network, acc: *Accumulator, pos: *const Positi
 /// fresh build of a perspective whose king moved to another view. `pos` is the
 /// position after the move (its `dirty` lists the changes).
 pub fn update(net: *const Network, src: *const Accumulator, dst: *Accumulator, pos: *const Position) void {
+    // A kernel per shape of change, so the row loops unroll with the counts
+    // known: a quiet move or promotion, a capture (en passant too), castling.
     const d = &pos.dirty;
-    for (0..2) |pi| {
-        const persp: bb.Color = @intCast(pi);
-        const view = positionView(persp, pos);
-        if (!view.eql(src.view[persp])) {
-            refreshPerspective(net, dst, pos, persp);
-            continue;
-        }
-        dst.view[persp] = view;
-        var adds: [2]*const [HIDDEN]i16 = undefined;
-        var subs: [2]*const [HIDDEN]i16 = undefined;
-        for (0..d.n_add) |k| adds[k] = row(net, featureIndex(persp, view, d.add[k].piece, d.add[k].sq));
-        for (0..d.n_sub) |k| subs[k] = row(net, featureIndex(persp, view, d.sub[k].piece, d.sub[k].sq));
+    switch (@as(u8, d.n_add) << 2 | d.n_sub) {
+        1 << 2 | 1 => updateWith(1, 1, net, src, dst, pos),
+        1 << 2 | 2 => updateWith(1, 2, net, src, dst, pos),
+        2 << 2 | 2 => updateWith(2, 2, net, src, dst, pos),
+        else => unreachable,
+    }
+}
 
-        var i: usize = 0;
-        while (i < HIDDEN) : (i += LANES) {
-            var v: V16 = src.v[pi][i..][0..LANES].*;
-            for (adds[0..d.n_add]) |a| v +%= a[i..][0..LANES].*;
-            for (subs[0..d.n_sub]) |s| v -%= s[i..][0..LANES].*;
-            dst.v[pi][i..][0..LANES].* = v;
+inline fn updateWith(comptime n_add: usize, comptime n_sub: usize, net: *const Network, src: *const Accumulator, dst: *Accumulator, pos: *const Position) void {
+    const d = &pos.dirty;
+    inline for (0..2) |pi| {
+        const persp: bb.Color = pi;
+        const view = positionView(persp, pos);
+        if (MIRROR and !view.eql(src.view[persp])) {
+            refreshPerspective(net, dst, pos, persp);
+        } else {
+            dst.view[persp] = view;
+            var adds: [n_add]*const [HIDDEN]i16 = undefined;
+            var subs: [n_sub]*const [HIDDEN]i16 = undefined;
+            inline for (0..n_add) |k| adds[k] = row(net, featureIndex(persp, view, d.add[k].piece, d.add[k].sq));
+            inline for (0..n_sub) |k| subs[k] = row(net, featureIndex(persp, view, d.sub[k].piece, d.sub[k].sq));
+            const from = &src.v[pi];
+            const to = &dst.v[pi];
+            var i: usize = 0;
+            while (i < HIDDEN) : (i += LANES) {
+                var v: V16 = from[i..][0..LANES].*;
+                inline for (adds) |a| v +%= a[i..][0..LANES].*;
+                inline for (subs) |s| v -%= s[i..][0..LANES].*;
+                to[i..][0..LANES].* = v;
+            }
         }
     }
 }
@@ -203,17 +217,20 @@ pub fn update(net: *const Network, src: *const Accumulator, dst: *Accumulator, p
 inline fn screluDot(acc: *const [HIDDEN]i16, w: *const [HIDDEN]i16) V32 {
     const zero: V16 = @splat(0);
     const qa: V16 = @splat(QA);
-    var sum: V32 = @splat(0);
+    // Two sums so twice as many multiply-accumulates are in flight.
+    var sums = [2]V32{ @splat(0), @splat(0) };
     var i: usize = 0;
-    while (i < HIDDEN) : (i += LANES) {
-        const a: V16 = acc[i..][0..LANES].*;
-        const c = @min(@max(a, zero), qa);
-        const ww: V16 = w[i..][0..LANES].*;
-        // c * w fits in i16 because |w| <= 127 and c <= 255 (lizard SCReLU trick).
-        const cw = c *% ww;
-        sum +%= @as(V32, c) *% @as(V32, cw);
+    while (i < HIDDEN) : (i += 2 * LANES) {
+        inline for (&sums, 0..) |*sum, k| {
+            const a: V16 = acc[i + k * LANES ..][0..LANES].*;
+            const c = @min(@max(a, zero), qa);
+            const ww: V16 = w[i + k * LANES ..][0..LANES].*;
+            // c * w fits in i16 because |w| <= 127 and c <= 255 (lizard SCReLU trick).
+            const cw = c *% ww;
+            sum.* +%= @as(V32, c) *% @as(V32, cw);
+        }
     }
-    return sum;
+    return sums[0] +% sums[1];
 }
 
 /// Evaluation in centipawns from the side to move's point of view.

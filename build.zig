@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
     // Network shape; nets only load into a binary built with the same shape.
     // With -Dnet both default to what that file's header says.
     const shape = if (net_path) |p| netShape(b, p) else NetShape{};
-    const hidden = b.option(u32, "hidden", "NNUE hidden layer size (default 256 or the -Dnet's, multiple of 16)") orelse shape.hidden;
+    const hidden = b.option(u32, "hidden", "NNUE hidden layer size (default 256 or the -Dnet's, multiple of 32)") orelse shape.hidden;
     const king_buckets = b.option(u32, "king-buckets", "NNUE king buckets: 0 (none, unmirrored), 1, 4, 8 or 16 (default 0 or the -Dnet's)") orelse shape.king_buckets;
 
     // Opening names and the strong players' move tree for the coach

@@ -166,20 +166,44 @@ inline fn scoreFromTT(s: i32, ply: usize) i32 {
     return s;
 }
 
+/// Ordering score of the TT move, above every other move's.
+const TT_MOVE_SCORE: i32 = 1 << 30;
+
 const ScoredMoves = struct {
     list: MoveList = .{},
     scores: [256]i32 = undefined,
+    /// Leading moves already in pick order (the TT move, put first by scoreMoves).
+    ready: usize = 0,
 
+    /// Selection sort, one step: the best remaining move (the first one on
+    /// ties) is swapped to `i` and returned; scores[i] is then its score.
+    /// The best score stays in a register: reloading scores[best] put a load
+    /// on every comparison's path.
     fn pick(self: *ScoredMoves, i: usize) Move {
+        if (i < self.ready) return self.list.moves[i];
         var best = i;
+        var best_score = self.scores[i];
         for (i + 1..self.list.len) |j| {
-            if (self.scores[j] > self.scores[best]) best = j;
+            const s = self.scores[j];
+            if (s > best_score) {
+                best = j;
+                best_score = s;
+            }
         }
-        if (best != i) {
-            std.mem.swap(Move, &self.list.moves[i], &self.list.moves[best]);
-            std.mem.swap(i32, &self.scores[i], &self.scores[best]);
-        }
-        return self.list.moves[i];
+        const m = self.list.moves[best];
+        self.list.moves[best] = self.list.moves[i];
+        self.list.moves[i] = m;
+        self.scores[best] = self.scores[i];
+        self.scores[i] = best_score;
+        return m;
+    }
+
+    /// Whether the capture or queen promotion just picked at `i` passed SEE
+    /// against 0 when it was scored (underpromotions read as false); null for
+    /// the TT move, which wasn't tested.
+    inline fn seeWins(self: *const ScoredMoves, i: usize) ?bool {
+        const s = self.scores[i];
+        return if (s == TT_MOVE_SCORE) null else s > 0;
     }
 };
 
@@ -360,10 +384,12 @@ pub const Searcher = struct {
 
     fn scoreMoves(self: *Searcher, pos: *const Position, sm: *ScoredMoves, tt_move: Move, ply: usize) void {
         const killers = self.killers[ply];
+        var tt_index: ?usize = null;
         for (sm.list.slice(), 0..) |m, i| {
             var s: i32 = 0;
             if (m.eql(tt_move)) {
-                s = 1 << 30;
+                s = TT_MOVE_SCORE;
+                tt_index = i;
             } else if (m.isNoisy()) {
                 const victim: usize = if (m.flag() == Move.EP_CAPTURE) 0 else if (m.isCapture()) bb.pieceType(pos.board[m.to()]) else 6;
                 const attacker = bb.pieceType(pos.board[m.from()]);
@@ -380,6 +406,13 @@ pub const Searcher = struct {
                 s = self.quietHistory(pos, m, ply);
             }
             sm.scores[i] = s;
+        }
+        // The first pick would find the TT move (the unique top score) and
+        // swap it to the front; do that now and skip the scan.
+        if (tt_index) |t| {
+            std.mem.swap(Move, &sm.list.moves[0], &sm.list.moves[t]);
+            std.mem.swap(i32, &sm.scores[0], &sm.scores[t]);
+            sm.ready = 1;
         }
     }
 
@@ -627,7 +660,8 @@ pub const Searcher = struct {
                     // SEE pruning of quiets that hang material.
                     if (depth <= 8 and !see(pos, m, -70 * depth)) continue;
                 } else {
-                    if (depth <= 8 and !see(pos, m, -100 * depth)) continue;
+                    // A capture that won SEE against 0 when scored clears this lower bar too.
+                    if (depth <= 8 and sm.seeWins(i) != true and !see(pos, m, -100 * depth)) continue;
                 }
             }
 
@@ -758,7 +792,8 @@ pub const Searcher = struct {
         for (0..sm.list.len) |i| {
             const m = sm.pick(i);
             if (!in_check) {
-                if (!see(pos, m, 0)) continue;
+                // Scoring already ran this test on all but the TT move.
+                if (!(sm.seeWins(i) orelse see(pos, m, 0))) continue;
                 // Delta pruning: even winning this piece cannot reach alpha.
                 if (!m.isPromotion() and m.isCapture()) {
                     const victim: usize = if (m.flag() == Move.EP_CAPTURE) 0 else bb.pieceType(pos.board[m.to()]);
@@ -793,6 +828,41 @@ test "see basics" {
     // Queen takes pawn defended by pawn: loses material.
     const p2 = try Position.fromFen("4k3/8/2p5/3p4/8/8/3Q4/4K3 w - - 0 1");
     try std.testing.expect(!see(&p2, Move.init(11, 35, Move.CAPTURE), 0));
+}
+
+test "see is monotone in the threshold" {
+    // The search reuses a capture's SEE-against-0 result from move scoring
+    // for pruning at lower thresholds, which needs a win at t to be a win below t.
+    atk.init();
+    var prng = std.Random.DefaultPrng.init(3);
+    const r = prng.random();
+    const fens = [_][]const u8{
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        "2kr3r/ppp2ppp/2n5/2b1q3/4P3/2P2N2/PP1Q1PPP/RNB1KB1R b KQ - 0 10",
+    };
+    var tested: usize = 0;
+    for (fens) |fen| {
+        var pos = try Position.fromFen(fen);
+        for (0..300) |_| {
+            var list = MoveList{};
+            movegen.generate(&pos, &list, .all);
+            if (list.len == 0) break;
+            for (list.slice()) |m| {
+                if (!m.isNoisy()) continue;
+                var t: i32 = 1000;
+                var won = false;
+                while (t >= -1000) : (t -= 50) {
+                    const w = see(&pos, m, t);
+                    try std.testing.expect(!won or w);
+                    won = w;
+                    tested += 1;
+                }
+            }
+            pos = pos.makeMove(list.moves[r.uintLessThan(usize, list.len)]);
+        }
+    }
+    try std.testing.expect(tested > 1000);
 }
 
 test "principal variations are legal" {
