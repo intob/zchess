@@ -40,6 +40,9 @@ log "building from $(git rev-parse --short HEAD) in $WT"
 cp "$MAIN/$BEST" "$BEST"
 
 if [ ! -f "data/gen${N}book.bin.done" ]; then
+    # This Mac's share (scripts/mac-datagen.sh) is collected as a staged file:
+    # stop it first, as it's about to be needed for training anyway.
+    "$MAIN/scripts/mac-datagen.sh" stop
     log "collecting gen$N from the cluster"
     scripts/cluster.sh collect "${N}book"
     touch "data/gen${N}book.bin.done"
