@@ -250,6 +250,9 @@ self-play SPRTs (+32.6, +44.1, +10.5). Recipe for the next generation: loss powe
   2800 +298 ± 56 (gen7w +263), 3000 +160 ± 43 (+117), 3190 −10 ± 33 (−24), so
   **3146** in `nets/ratings.txt` (gen7w 3115: +31 against Stockfish, about the same as
   the +30 in self-play this time).
+- Next generation: `scripts/genw.sh 9 data/gen7book.bin,data/gen8book.bin,data/gen9book.bin`
+  does all of the above (now this recipe, from a clean worktree, and on promotion it
+  switches the cluster to the new net and logs where the generator changed).
 
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
