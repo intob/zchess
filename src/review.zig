@@ -158,6 +158,25 @@ pub fn grade(before: i32, after_opp: i32) Grade {
     return .{ .drop = drop, .cls = cls };
 }
 
+pub const Judged = struct { g: Grade, before: i32 };
+
+/// Grades `move`, played in `p`: `eb` is the search of `p` and `ea` of the
+/// position after the move; `keys` are the positions up to and including
+/// `p`. The engine's own best move is never a mistake, and a flagged other
+/// move is judged against the position after the best move, searched the
+/// same way as the one after the move played: two searches of different
+/// positions see different depths (the one a move further on can see what
+/// the first missed), and that difference isn't the move's fault. `before`
+/// is the score it was judged from.
+pub fn judge(s: *search.Searcher, p: *const Position, move: Move, eb: Eval, ea: Eval, keys: []const u64, nodes: u64) Judged {
+    if (move.eql(eb.best)) return .{ .g = .{ .drop = 0, .cls = .good }, .before = eb.score };
+    const g = grade(eb.score, ea.score);
+    if (g.cls == .good or eb.best.data == 0) return .{ .g = g, .before = eb.score };
+    const alt = p.makeMove(eb.best);
+    const before = -evalPosition(s, &alt, keys, nodes).score;
+    return .{ .g = grade(before, ea.score), .before = before };
+}
+
 test "grade: a hung queen far ahead is still a blunder" {
     // 18. Bd4?? leaving the queen to Nxa7: +16.80 -> +8.45.
     const g = grade(1680, -845);
@@ -172,6 +191,8 @@ const Flag = struct {
     cls: Class,
     label: Label,
     drop: f64,
+    /// The score the move was judged from (see `judge`), mover's view.
+    before: i32,
 };
 
 const Ctx = struct {
@@ -717,14 +738,14 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
     var user_moves: usize = 0;
     for (0..n) |i| {
         if (positions.items[i].side != user_color) continue;
-        const g = grade(evals[i].score, evals[i + 1].score);
-        const drop = g.drop;
-        const cls = g.cls;
+        const j = judge(s, &positions.items[i], moves.items[i], evals[i], evals[i + 1], keys.items[0 .. i + 1], ctx.nodes);
+        const drop = j.g.drop;
+        const cls = j.g.cls;
         acc_sum += moveAccuracy(drop);
         user_moves += 1;
         if (cls == .good) continue;
         const label = classifyKind(positions.items, evals, moves.items, i);
-        try flags.append(gpa, .{ .ply = i, .cls = cls, .label = label, .drop = drop });
+        try flags.append(gpa, .{ .ply = i, .cls = cls, .label = label, .drop = drop, .before = j.before });
         sum.counts[@intFromEnum(cls)] += 1;
         if (cls != .inaccuracy) {
             sum.kinds[@intFromEnum(label.kind)] += 1;
@@ -788,7 +809,7 @@ fn analyse(ctx: *Ctx, s: *search.Searcher, gi: usize) !void {
         };
         try w.writeByte(']');
         try w.print(",\"drop\":{d:.1},\"win_before\":{d:.1},\"win_after\":{d:.1},\"phase\":\"{s}\",\"fen\":", .{
-            f.drop, winPct(evals[f.ply].score), winPct(-evals[f.ply + 1].score), phaseOf(p, f.ply),
+            f.drop, winPct(f.before), winPct(-evals[f.ply + 1].score), phaseOf(p, f.ply),
         });
         try writeJsonString(w, p.toFen(&fen_buf));
         // Squares for click-to-move puzzles, and the position after the move.

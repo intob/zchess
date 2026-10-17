@@ -116,7 +116,8 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
     const after = before.makeMove(move);
     const eb = review.evalPosition(s, before, keys[0 .. keys.len -| 1], NODES);
     const ea = review.evalPosition(s, &after, keys, NODES);
-    const g = review.grade(eb.score, ea.score);
+    const j = review.judge(s, before, move, eb, ea, keys, NODES);
+    const g = j.g;
 
     var sb: [16]u8 = undefined;
     var bsb: [16]u8 = undefined;
@@ -155,11 +156,11 @@ pub fn comment(s: *search.Searcher, ctx: *Context, before: *const Position, move
         // Far ahead or behind the winning chances barely move; show the eval.
         if (g.by_eval) {
             try w.writeAll("eval ");
-            try writeScore(w, eb.score);
+            try writeScore(w, j.before);
             try w.writeAll(" -> ");
             try writeScore(w, -ea.score);
         } else {
-            try w.print("win chance {d:.0}% -> {d:.0}%", .{ review.winPct(eb.score), review.winPct(-ea.score) });
+            try w.print("win chance {d:.0}% -> {d:.0}%", .{ review.winPct(j.before), review.winPct(-ea.score) });
         }
         try w.print("). Better was {s}", .{best});
         if (eb.pv_len > 1) {
