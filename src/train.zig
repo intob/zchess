@@ -12,6 +12,8 @@ const bb = @import("bitboard.zig");
 const nnue = @import("nnue.zig");
 const cli = @import("cli.zig");
 const Record = @import("data.zig").Record;
+const movegen = @import("movegen.zig");
+const search = @import("search.zig");
 const Output = @import("output.zig").Output;
 
 const IN = nnue.INPUTS;
@@ -40,8 +42,55 @@ const help =
     \\  --threads <n>      worker threads (default: all cores)
     \\  --init <ckpt>      start from a float checkpoint instead of random weights
     \\  --seed <n>         shuffle/initialisation seed (default 1)
+    \\  --quiet-only       train on quiet positions only: not in check, and no capture
+    \\                     winning material for the side to move (their static eval
+    \\                     is what the search score says; noisy ones it isn't)
     \\
 ;
+
+/// Whether a training position is quiet: the side to move isn't in check
+/// and has no capture that wins material (static exchange > 0).
+fn isQuiet(r: *const Record) bool {
+    const pos = r.toPosition();
+    if (pos.inCheck()) return false;
+    var list = movegen.MoveList{};
+    movegen.generate(&pos, &list, .noisy);
+    for (list.slice()) |m| if (m.isCapture() and search.see(&pos, m, 1)) return false;
+    return true;
+}
+
+/// --quiet-only: drops the positions that aren't quiet, in place and in
+/// order (so games stay contiguous for the validation split). Returns how
+/// many are left.
+fn keepQuiet(gpa: std.mem.Allocator, data: []Record, threads: usize) !usize {
+    const keep = try gpa.alloc(bool, data.len);
+    defer gpa.free(keep);
+    const Work = struct {
+        fn run(d: []const Record, k: []bool) void {
+            for (d, k) |*r, *x| x.* = isQuiet(r);
+        }
+    };
+    const n_threads = @max(threads, 1);
+    const chunk = (data.len + n_threads - 1) / n_threads;
+    var handles: [256]?std.Thread = .{null} ** 256;
+    for (0..n_threads) |t| {
+        const lo = @min(t * chunk, data.len);
+        const hi = @min(lo + chunk, data.len);
+        if (lo == hi) continue;
+        handles[t] = std.Thread.spawn(.{}, Work.run, .{ data[lo..hi], keep[lo..hi] }) catch blk: {
+            Work.run(data[lo..hi], keep[lo..hi]);
+            break :blk null;
+        };
+    }
+    for (handles[0..n_threads]) |h| if (h) |t| t.join();
+    var n: usize = 0;
+    for (data, keep) |r, k| {
+        if (!k) continue;
+        data[n] = r;
+        n += 1;
+    }
+    return n;
+}
 
 const Feats = struct {
     stm: [32]u16 = undefined,
@@ -308,7 +357,12 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var threads: usize = std.Thread.getCpuCount() catch 4;
     var init_path: []const u8 = "";
     var seed: u64 = 1;
+    var quiet_only = false;
     while (p.next()) |a| {
+        if (std.mem.eql(u8, a, "--quiet-only")) {
+            quiet_only = true;
+            continue;
+        }
         if (p.flag(a, "--data")) |v| {
             var it = std.mem.tokenizeScalar(u8, v, ',');
             while (it.next()) |path| try paths.append(gpa, path);
@@ -363,6 +417,12 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         }
         filled += off / @sizeOf(Record);
         out.print("loaded {d} positions from {s}\n", .{ n, path });
+    }
+
+    if (quiet_only) {
+        const before = filled;
+        filled = try keepQuiet(gpa, data[0..filled], threads);
+        out.print("quiet only: kept {d} of {d} positions ({d:.1}%)\n", .{ filled, before, 100 * @as(f64, @floatFromInt(filled)) / @as(f64, @floatFromInt(@max(before, 1))) });
     }
 
     var prng = std.Random.DefaultPrng.init(seed);
