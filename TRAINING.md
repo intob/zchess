@@ -246,7 +246,10 @@ self-play SPRTs (+32.6, +44.1, +10.5). Recipe for the next generation: loss powe
 - gen9book: the cluster restarted on it with gen7w-p25-e30 at 10:04, then switched to
   gen8w at 20:40. **The first 15.7M gen9book positions are from gen7w** (pi1 3.53M, pi5
   3.25M, bitch-box 8.96M), the rest from gen8w. pi2–4 and pi6 unreachable.
-- Gauntlet vs Stockfish 19 on bitch-box (same levels as gen7w): running.
+- Gauntlet vs Stockfish 19 on bitch-box (10+0.1, 200 games per level, as gen7w):
+  2800 +298 ± 56 (gen7w +263), 3000 +160 ± 43 (+117), 3190 −10 ± 33 (−24), so
+  **3146** in `nets/ratings.txt` (gen7w 3115: +31 against Stockfish, about the same as
+  the +30 in self-play this time).
 
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`

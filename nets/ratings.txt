@@ -6,3 +6,4 @@ gen4 2980
 gen5 3045
 gen6w 3070
 gen7w-p25-e30 3115
+gen8w 3146
