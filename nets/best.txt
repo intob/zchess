@@ -1,1 +1,1 @@
-nets/gen7w-p25-e30.nnue
+nets/gen8w.nnue

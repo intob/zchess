@@ -367,13 +367,53 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
 
     var prng = std.Random.DefaultPrng.init(seed);
     const rng = prng.random();
+    // Validation: whole games, so no validation position shares a game with
+    // the training positions (neighbouring positions of one game are nearly
+    // the same, and a net that memorises games would look good). A game's
+    // positions are contiguous; the next game starts where the ply count
+    // stops increasing or the result changes.
+    var starts: std.ArrayList(u32) = .empty;
+    defer starts.deinit(gpa);
+    for (0..filled) |i| {
+        if (i == 0 or data[i].ply <= data[i - 1].ply or data[i].result != data[i - 1].result) try starts.append(gpa, @intCast(i));
+    }
+    try starts.append(gpa, @intCast(filled));
+    const n_games = starts.items.len - 1;
+    const order = try gpa.alloc(u32, n_games);
+    defer gpa.free(order);
+    for (order, 0..) |*x, i| x.* = @intCast(i);
+    rng.shuffle(u32, order);
+    var is_val = try std.DynamicBitSetUnmanaged.initEmpty(gpa, filled);
+    defer is_val.deinit(gpa);
+    const val_target = @min(filled / 100, 100_000);
+    var val_n: usize = 0;
+    var val_games: usize = 0;
+    for (order) |g| {
+        if (val_n >= val_target) break;
+        const lo = starts.items[g];
+        const hi = starts.items[g + 1];
+        is_val.setRangeValue(.{ .start = lo, .end = hi }, true);
+        val_n += hi - lo;
+        val_games += 1;
+    }
     const idx = try gpa.alloc(u32, filled);
     defer gpa.free(idx);
-    for (idx, 0..) |*x, i| x.* = @intCast(i);
-    rng.shuffle(u32, idx);
-    const val_n = @min(filled / 100, 100_000);
-    const train_idx = idx[0 .. filled - val_n];
-    const val_idx = idx[filled - val_n ..];
+    var n_train: usize = 0;
+    var n_v: usize = filled - val_n;
+    for (0..filled) |i| {
+        if (is_val.isSet(i)) {
+            idx[n_v] = @intCast(i);
+            n_v += 1;
+        } else {
+            idx[n_train] = @intCast(i);
+            n_train += 1;
+        }
+    }
+    const train_idx = idx[0..n_train];
+    const val_idx = idx[n_train..];
+    rng.shuffle(u32, train_idx);
+    rng.shuffle(u32, val_idx);
+    out.print("validation: {d} positions from {d} whole games (of {d})\n", .{ val_n, val_games, n_games });
 
     const params = try gpa.alloc(f32, P);
     defer gpa.free(params);

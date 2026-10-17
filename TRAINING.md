@@ -226,6 +226,28 @@ self-play SPRTs (+32.6, +44.1, +10.5). Recipe for the next generation: loss powe
 2800 +263 ± 57, 3000 +117 ± 40, 3190 −24 ± 37, so **3115** in `nets/ratings.txt`
 (gen6w 3070: +45 against Stockfish, about half the self-play gain, as usual).
 
+### gen8w (2026-10-17, Mac + cluster)
+- Data: gen8book, 167.3M positions (bitch-box 98.7M, pi1 32.2M and pi5 36.4M, the
+  last two staged on 10-16). About the first 87.8M came from gen6w, the rest from
+  gen7w-p25-e30 (cluster restart on 10-14). Window: gen6book + gen7book + gen8book,
+  290M positions, twice gen7w's.
+- Recipe: gen7's winners, `--power 2.5 --epochs 30 --seed 1`, 512 wide. About 4 hours on
+  the Mac (~600k positions/s once nothing else ran).
+- Validation is now whole games (`train.zig`): 100,099 positions from 959 held-out games
+  of 2.8M, so no validation position shares a game with a training position. Validation
+  loss 0.001203 at epoch 6 → 0.001091 at epoch 30, slightly *below* train loss (0.001117)
+  throughout: no sign of memorising, unlike kb8's in-window numbers. Not comparable with
+  earlier nets' validation losses (other games, other split).
+- [x] gen8w vs gen7w-p25-e30, 8+0.08 [0, 5]: **+30.0 ± 10.2, H1** at 1418 games
+  (+342 =856 −220). **Promoted** (`nets/best.txt`).
+- Built from a clean worktree at 5e22e01 + the validation split, without the
+  uncommitted history pruning (its SPRT stopped inconclusive at −1.4 ± 13 after 1798
+  games), for the cluster binary, both SPRT engines and the En Croissant engine.
+- gen9book: the cluster restarted on it with gen7w-p25-e30 at 10:04, then switched to
+  gen8w at 20:40. **The first 15.7M gen9book positions are from gen7w** (pi1 3.53M, pi5
+  3.25M, bitch-box 8.96M), the rest from gen8w. pi2–4 and pi6 unreachable.
+- Gauntlet vs Stockfish 19 on bitch-box (same levels as gen7w): running.
+
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
 can't compare a 512 net with a 256 net: build per size and SPRT the two binaries
