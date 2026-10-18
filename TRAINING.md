@@ -212,6 +212,16 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
   - `ScoredMoves{}` memset its 1.5 KB (undefined arrays included) at every node: 3.4%.
   - Move scoring looks up the history rows once per node, movegen keeps the list count
     in a register, and makeMove's checkers skip the other side's pawns and the king.
+- [x] Lazy SMP helper depth skipping + thread voting (branch `search/smp`, Stockfish's
+  skip tables and vote), 4 threads each, Hash 64, one game at a time on bitch-box, vs faef397:
+  **−2.5 ± 7.1** after 2240 games (+338 =1548 −354, LLR −0.70), stopped 2026-10-18. At
+  ~140 games/h it needed days more and held up the queue. No gain shown; not merged.
+- [x] Time management (branch `search/tm`): from depth 4 the soft limit is scaled by
+  best-move stability (1.25 → 0.85 over 8 unchanged iterations), score drop (0.8–1.4)
+  and the best move's share of root nodes (Ethereal's (1.5 − f)·1.35, clamped 0.5–2),
+  capped at the hard limit. 1 thread, vs faef397 on bitch-box: **+22.1 ± 8.5, H1** at
+  1924 games (+397 =1252 −275). Uses slightly less time on average (428 vs 441 ms/move
+  over 60 positions). Fixed-depth bench unchanged (gen8w and HCE). Merged 2026-10-18.
 
 ### Loss power, king buckets, longer schedule (started 2026-10-12 18:52, Mac + bitch-box)
 New in the trainer and engine:

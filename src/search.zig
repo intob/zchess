@@ -41,6 +41,18 @@ pub const Limits = struct {
 
 pub const MAX_MULTIPV = 16;
 
+/// Time management: how much of the soft time limit to use before starting
+/// another iteration, from how settled the search is. More when the best move
+/// has just changed, the score is falling or the best move took little of the
+/// effort (others came close); less when it has held for several iterations
+/// and took most of the effort. (Shapes as in Ethereal and Stockfish.)
+fn timeScale(stable: u32, score_drop: i32, best_frac: f64) f64 {
+    const stability = 1.25 - 0.05 * @as(f64, @floatFromInt(@min(stable, 8))); // 1.25 .. 0.85
+    const trend = 1.0 + 0.008 * @as(f64, @floatFromInt(std.math.clamp(score_drop, -25, 50))); // 0.8 .. 1.4
+    const effort = std.math.clamp((1.5 - best_frac) * 1.35, 0.5, 2.0);
+    return stability * trend * effort;
+}
+
 /// One reported line (MultiPV): its first move, score and principal variation.
 pub const Line = struct {
     move: Move,
@@ -263,6 +275,10 @@ pub const Searcher = struct {
     pondering: ?*std.atomic.Value(bool) = null,
     clock_offset_ms: std.atomic.Value(i64) = .init(0),
     root_depth: i32 = 0,
+    /// Nodes spent under each root move this iteration (for `timeScale`).
+    root_moves: [256]Move = undefined,
+    root_nodes: [256]u64 = undefined,
+    n_root: usize = 0,
     root_best: Move = Move.none,
     /// Number of lines to search and report (UCI MultiPV); 1 = normal search.
     multipv: usize = 1,
@@ -499,8 +515,11 @@ pub const Searcher = struct {
         var lines: [MAX_MULTIPV]Line = undefined;
         self.n_lines = 0;
         var depth: i32 = 1;
+        var stable: u32 = 0;
+        var prev_score: i32 = 0;
         iterations: while (depth <= limits.depth) : (depth += 1) {
             self.root_depth = depth;
+            self.n_root = 0;
             self.seldepth = 0;
             // Line k is the best move once lines 0..k-1 are excluded at the root.
             for (0..n_lines) |k| {
@@ -533,16 +552,49 @@ pub const Searcher = struct {
             }.better);
             @memcpy(self.lines[0..n_lines], lines[0..n_lines]);
             self.n_lines = n_lines;
+            stable = if (lines[0].move.eql(best.move)) stable + 1 else 0;
+            const score_drop = prev_score - lines[0].score;
+            prev_score = lines[0].score;
             best = .{ .move = lines[0].move, .score = lines[0].score, .depth = depth };
             self.shared_nodes.store(self.nodes, .monotonic);
             if (self.out) |o| self.report(o, depth);
             if (self.isPondering()) continue;
             if (limits.soft_nodes != 0 and self.nodes >= limits.soft_nodes) break;
-            if (limits.soft_ms != 0 and self.limitElapsedMs() >= limits.soft_ms) break;
+            if (limits.soft_ms != 0) {
+                var soft: f64 = @floatFromInt(limits.soft_ms);
+                if (depth >= 4) soft *= timeScale(stable, score_drop, self.rootFraction(best.move));
+                if (limits.hard_ms != 0) soft = @min(soft, @as(f64, @floatFromInt(limits.hard_ms)));
+                if (@as(f64, @floatFromInt(self.limitElapsedMs())) >= soft) break;
+            }
         }
         self.n_excluded = 0;
         self.shared_nodes.store(self.nodes, .monotonic);
         return best;
+    }
+
+    /// Share of this iteration's root nodes spent under `m` (1 if none counted).
+    fn rootFraction(self: *const Searcher, m: Move) f64 {
+        var total: u64 = 0;
+        var mine: u64 = 0;
+        for (self.root_moves[0..self.n_root], self.root_nodes[0..self.n_root]) |rm, n| {
+            total += n;
+            if (rm.eql(m)) mine += n;
+        }
+        if (total == 0) return 1;
+        return @as(f64, @floatFromInt(mine)) / @as(f64, @floatFromInt(total));
+    }
+
+    fn addRootNodes(self: *Searcher, m: Move, n: u64) void {
+        for (self.root_moves[0..self.n_root], 0..) |rm, i| {
+            if (rm.eql(m)) {
+                self.root_nodes[i] += n;
+                return;
+            }
+        }
+        if (self.n_root == self.root_moves.len) return;
+        self.root_moves[self.n_root] = m;
+        self.root_nodes[self.n_root] = n;
+        self.n_root += 1;
     }
 
     inline fn isExcluded(self: *const Searcher, m: Move) bool {
@@ -744,6 +796,7 @@ pub const Searcher = struct {
                 }
             }
 
+            const nodes_before = self.nodes;
             const child = self.makeMove(pos, m, ply);
             const gives_check = child.inCheck();
             if (ext == 0 and gives_check and pi < 2 * self.root_depth) ext = 1;
@@ -770,6 +823,7 @@ pub const Searcher = struct {
                     score = -self.negamax(&child, -beta, -alpha, new_depth, ply + 1, true, false);
             }
             self.unmake();
+            if (root) self.addRootNodes(m, self.nodes - nodes_before);
             if (self.stopped) return 0;
             searched += 1;
 
