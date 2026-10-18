@@ -6,6 +6,13 @@
 //! input weight sets by where its own king stands, and mirrors the board
 //! left-right so that king is always on files a-d. 0 = the original layout
 //! (one weight set, no mirroring, file format version 1).
+//!
+//! Int8 feature weights (built with -Dft8): the feature transformer stores i8
+//! weights at QA = 128 instead of i16 at QA = 255, which halves the weight rows
+//! the accumulator updates read; the output layer moves from QB = 64 to 128.
+//! On gen7w's float net that is less quantisation error than the i16 layout
+//! (6.4 cp mean vs 7.1). File format version 3, which always has the 20-byte
+//! header.
 
 const std = @import("std");
 const bb = @import("bitboard.zig");
@@ -21,14 +28,19 @@ pub const INPUTS: usize = 768 * (if (MIRROR) KING_BUCKETS else 1);
 /// Set at build time with -Dhidden= (default 256; from the -Dnet header).
 pub const HIDDEN: usize = build_options.hidden;
 pub const BUCKETS = 8;
-pub const QA = 255;
-pub const QB = 64;
+/// Set at build time with -Dft8 (default false; from the -Dnet header).
+pub const FT8 = build_options.ft8;
+/// Feature-transformer weight type.
+pub const FtW = if (FT8) i8 else i16;
+pub const QA = if (FT8) 128 else 255;
+pub const QB = if (FT8) 128 else 64;
 pub const SCALE = 400;
 
 pub const MAGIC = "ZCNN";
-/// Version 2 adds a king-bucket count to the header.
-pub const VERSION: u32 = if (MIRROR) 2 else 1;
-pub const HEADER_SIZE = if (MIRROR) 20 else 16;
+/// Version 2 adds a king-bucket count to the header; version 3 is int8 feature
+/// weights (with the king-bucket count, which may be 0).
+pub const VERSION: u32 = if (FT8) 3 else if (MIRROR) 2 else 1;
+pub const HEADER_SIZE = if (FT8 or MIRROR) 20 else 16;
 
 /// King bucket of each own-king square on files a-d (after mirroring),
 /// rank 1 first. Finer near the back rank, where kings spend most of the game.
@@ -58,12 +70,12 @@ const V16 = @Vector(LANES, i16);
 const V32 = @Vector(LANES, i32);
 
 pub const Network = struct {
-    ft_w: [INPUTS * HIDDEN]i16 align(64),
+    ft_w: [INPUTS * HIDDEN]FtW align(64),
     ft_b: [HIDDEN]i16 align(64),
     out_w: [BUCKETS][2 * HIDDEN]i16 align(64),
     out_b: [BUCKETS]i16,
 
-    pub const file_size = HEADER_SIZE + 2 * (INPUTS * HIDDEN + HIDDEN + BUCKETS * 2 * HIDDEN + BUCKETS);
+    pub const file_size = HEADER_SIZE + @sizeOf(FtW) * INPUTS * HIDDEN + 2 * (HIDDEN + BUCKETS * 2 * HIDDEN + BUCKETS);
 
     pub fn loadBytes(net: *Network, bytes: []const u8) !void {
         if (bytes.len < 16 or !std.mem.eql(u8, bytes[0..4], MAGIC)) return error.BadNetMagic;
@@ -72,7 +84,7 @@ pub const Network = struct {
         const buckets = std.mem.readInt(u32, bytes[12..16], .little);
         if (version != VERSION or hidden != HIDDEN or buckets != BUCKETS) return error.BadNetShape;
         if (bytes.len != file_size) return error.BadNetSize;
-        if (MIRROR and std.mem.readInt(u32, bytes[16..20], .little) != KING_BUCKETS) return error.BadNetShape;
+        if (HEADER_SIZE == 20 and std.mem.readInt(u32, bytes[16..20], .little) != KING_BUCKETS) return error.BadNetShape;
         var off: usize = HEADER_SIZE;
         inline for (.{ "ft_w", "ft_b", "out_w", "out_b" }) |name| {
             const dst = std.mem.asBytes(&@field(net, name));
@@ -87,7 +99,7 @@ pub const Network = struct {
         std.mem.writeInt(u32, header[4..8], VERSION, .little);
         std.mem.writeInt(u32, header[8..12], HIDDEN, .little);
         std.mem.writeInt(u32, header[12..16], BUCKETS, .little);
-        if (MIRROR) std.mem.writeInt(u32, header[16..20], KING_BUCKETS, .little);
+        if (HEADER_SIZE == 20) std.mem.writeInt(u32, header[16..20], KING_BUCKETS, .little);
         try w.writeAll(&header);
         inline for (.{ "ft_w", "ft_b", "out_w", "out_b" }) |name| {
             try w.writeAll(std.mem.asBytes(&@field(net, name)));
@@ -100,6 +112,9 @@ pub const embedded: ?[]const u8 = if (build_options.has_net) @embedFile("default
 comptime {
     // screluDot takes two vectors a step.
     if (HIDDEN % (2 * LANES) != 0) @compileError("-Dhidden must be a multiple of 32");
+    // screluDot multiplies a clipped activation by an output weight in i16;
+    // the trainer clips output weights to 1.98, so 1.98 * QB * QA must fit.
+    if (QA * @round(1.98 * QB) > std.math.maxInt(i16)) @compileError("QA * QB too large for screluDot");
     if (embedded) |e| if (e.len != Network.file_size)
         @compileError("the -Dnet network doesn't match -Dhidden (wrong layer size)");
 }
@@ -147,8 +162,14 @@ pub inline fn outputBucket(pos: *const Position) usize {
     return @min((n -| 2) / 4, BUCKETS - 1);
 }
 
-inline fn row(net: *const Network, feat: usize) *const [HIDDEN]i16 {
+inline fn row(net: *const Network, feat: usize) *const [HIDDEN]FtW {
     return net.ft_w[feat * HIDDEN ..][0..HIDDEN];
+}
+
+/// Lanes i.. of a weight row, widened to i16 (int8 rows sign-extend into the
+/// add: saddw on NEON, vpmovsxbw on x86).
+inline fn rowLanes(w: *const [HIDDEN]FtW, i: usize) V16 {
+    return @as(@Vector(LANES, FtW), w[i..][0..LANES].*);
 }
 
 pub fn refresh(net: *const Network, acc: *Accumulator, pos: *const Position) void {
@@ -167,8 +188,7 @@ fn refreshPerspective(net: *const Network, acc: *Accumulator, pos: *const Positi
         var i: usize = 0;
         while (i < HIDDEN) : (i += LANES) {
             const a: V16 = acc.v[persp][i..][0..LANES].*;
-            const b: V16 = w[i..][0..LANES].*;
-            acc.v[persp][i..][0..LANES].* = a +% b;
+            acc.v[persp][i..][0..LANES].* = a +% rowLanes(w, i);
         }
     }
 }
@@ -197,8 +217,8 @@ inline fn updateWith(comptime n_add: usize, comptime n_sub: usize, net: *const N
             refreshPerspective(net, dst, pos, persp);
         } else {
             dst.view[persp] = view;
-            var adds: [n_add]*const [HIDDEN]i16 = undefined;
-            var subs: [n_sub]*const [HIDDEN]i16 = undefined;
+            var adds: [n_add]*const [HIDDEN]FtW = undefined;
+            var subs: [n_sub]*const [HIDDEN]FtW = undefined;
             inline for (0..n_add) |k| adds[k] = row(net, featureIndex(persp, view, d.add[k].piece, d.add[k].sq));
             inline for (0..n_sub) |k| subs[k] = row(net, featureIndex(persp, view, d.sub[k].piece, d.sub[k].sq));
             const from = &src.v[pi];
@@ -206,8 +226,8 @@ inline fn updateWith(comptime n_add: usize, comptime n_sub: usize, net: *const N
             var i: usize = 0;
             while (i < HIDDEN) : (i += LANES) {
                 var v: V16 = from[i..][0..LANES].*;
-                inline for (adds) |a| v +%= a[i..][0..LANES].*;
-                inline for (subs) |s| v -%= s[i..][0..LANES].*;
+                inline for (adds) |a| v +%= rowLanes(a, i);
+                inline for (subs) |s| v -%= rowLanes(s, i);
                 to[i..][0..LANES].* = v;
             }
         }
@@ -225,7 +245,7 @@ inline fn screluDot(acc: *const [HIDDEN]i16, w: *const [HIDDEN]i16) V32 {
             const a: V16 = acc[i + k * LANES ..][0..LANES].*;
             const c = @min(@max(a, zero), qa);
             const ww: V16 = w[i + k * LANES ..][0..LANES].*;
-            // c * w fits in i16 because |w| <= 127 and c <= 255 (lizard SCReLU trick).
+            // c * w fits in i16 because c <= QA and |w| <= 1.98 * QB (lizard SCReLU trick).
             const cw = c *% ww;
             sum.* +%= @as(V32, c) *% @as(V32, cw);
         }
@@ -276,7 +296,7 @@ test "incremental update matches refresh" {
     defer gpa.destroy(net);
     var prng = std.Random.DefaultPrng.init(1);
     const r = prng.random();
-    for (&net.ft_w) |*x| x.* = r.intRangeAtMost(i16, -60, 60);
+    for (&net.ft_w) |*x| x.* = r.intRangeAtMost(FtW, -60, 60);
     for (&net.ft_b) |*x| x.* = r.intRangeAtMost(i16, -60, 60);
     for (&net.out_w) |*bk| for (bk) |*x| {
         x.* = r.intRangeAtMost(i16, -127, 127);
@@ -310,7 +330,7 @@ test "king buckets: mirrored positions evaluate the same" {
     defer gpa.destroy(net);
     var prng = std.Random.DefaultPrng.init(2);
     const r = prng.random();
-    for (&net.ft_w) |*x| x.* = r.intRangeAtMost(i16, -60, 60);
+    for (&net.ft_w) |*x| x.* = r.intRangeAtMost(FtW, -60, 60);
     for (&net.ft_b) |*x| x.* = r.intRangeAtMost(i16, -60, 60);
     for (&net.out_w) |*bk| for (bk) |*x| {
         x.* = r.intRangeAtMost(i16, -127, 127);

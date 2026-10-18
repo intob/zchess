@@ -13,6 +13,7 @@ pub fn build(b: *std.Build) void {
     const shape = if (net_path) |p| netShape(b, p) else NetShape{};
     const hidden = b.option(u32, "hidden", "NNUE hidden layer size (default 256 or the -Dnet's, multiple of 32)") orelse shape.hidden;
     const king_buckets = b.option(u32, "king-buckets", "NNUE king buckets: 0 (none, unmirrored), 1, 4, 8 or 16 (default 0 or the -Dnet's)") orelse shape.king_buckets;
+    const ft8 = b.option(bool, "ft8", "NNUE int8 feature weights, format version 3 (default false or the -Dnet's)") orelse shape.ft8;
 
     // Opening names and the strong players' move tree for the coach
     // (zchess openings); embedded when the file exists.
@@ -24,6 +25,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "has_openings", openings_path != null);
     options.addOption(u32, "hidden", hidden);
     options.addOption(u32, "king_buckets", king_buckets);
+    options.addOption(bool, "ft8", ft8);
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -79,9 +81,10 @@ pub fn build(b: *std.Build) void {
     b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(tests).step);
 }
 
-const NetShape = struct { hidden: u32 = 256, king_buckets: u32 = 0 };
+const NetShape = struct { hidden: u32 = 256, king_buckets: u32 = 0, ft8: bool = false };
 
-/// Hidden size and king buckets from a .nnue header (see src/nnue.zig).
+/// Hidden size, king buckets and int8 feature weights from a .nnue header
+/// (see src/nnue.zig).
 fn netShape(b: *std.Build, path: []const u8) NetShape {
     const io = b.graph.io;
     const f = b.build_root.handle.openFile(io, path, .{}) catch return .{};
@@ -93,6 +96,7 @@ fn netShape(b: *std.Build, path: []const u8) NetShape {
     return .{
         .hidden = std.mem.readInt(u32, h[8..12], .little),
         .king_buckets = if (version >= 2 and n == 20) std.mem.readInt(u32, h[16..20], .little) else 0,
+        .ft8 = version == 3,
     };
 }
 

@@ -16,7 +16,9 @@
 # done). Run it under caffeinate on a laptop.
 #
 # Tunables: TRAIN_FLAGS (default gen7's winners: --power 2.5 --epochs 30 --seed 1),
-#           WT (worktree path), NODES=10000 (datagen nodes per move).
+#           WT (worktree path), NODES=10000 (datagen nodes per move),
+#           FT8=1 (train an int8-feature-weight net, format version 3; the
+#           engine builds below follow the net's header).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MAIN=$(pwd)
@@ -53,8 +55,8 @@ log "cluster: gen$((N + 1)) datagen with $BEST"
 scripts/cluster.sh start "$((N + 1))book" "$BEST" "$NODES" data/book.fen
 
 if [ ! -f "$MAIN/$NET" ]; then
-    zig build -Dart=false -Dhidden=512 -p bins/train512
-    log "training $NET (512 wide, $TRAIN_FLAGS) on $WINDOW"
+    zig build -Dart=false -Dhidden=512 -Dft8="$([ "${FT8:-0}" = 1 ] && echo true || echo false)" -p bins/train512
+    log "training $NET (512 wide, FT8=${FT8:-0}, $TRAIN_FLAGS) on $WINDOW"
     # shellcheck disable=SC2086 # TRAIN_FLAGS is deliberately split into words
     bins/train512/bin/zchess train --data "$WINDOW" --out "$NET" $TRAIN_FLAGS
     bins/train512/bin/zchess viz "$NET" || true

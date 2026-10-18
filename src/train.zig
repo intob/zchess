@@ -27,6 +27,8 @@ const OFF_OB = OFF_OW + NB * 2 * H;
 const P = OFF_OB + NB;
 
 const CLIP = 1.98;
+/// Int8 feature weights (-Dft8) hold at most 127 / QA.
+const FT_CLIP: f32 = if (nnue.FT8) 127.0 / @as(f32, nnue.QA) else CLIP;
 const CKPT_MAGIC = "ZCCK";
 
 const help =
@@ -34,7 +36,8 @@ const help =
     \\
     \\  --data <files>     comma-separated datagen files (may repeat)
     \\  --out <file>       quantised network output (a .ckpt float checkpoint is written next to it)
-    \\  --epochs <n>       passes over the data (default 10)
+    \\  --epochs <n>       passes over the data (default 10); 0 with --init just
+    \\                     quantises that checkpoint into this build's net format
     \\  --batch <n>        positions per batch (default 16384)
     \\  --lr <x>           initial learning rate, cosine-decayed to 2% (default 0.001)
     \\  --wdl <x>          weight of game result vs. search score in the target (default 0.1)
@@ -265,7 +268,8 @@ const Trainer = struct {
             const mh = t.m[i] / a.bc1;
             const vh = t.v[i] / a.bc2;
             const w = t.params[i] - a.lr * (mh / (@sqrt(vh) + eps) + decay * t.params[i]);
-            t.params[i] = std.math.clamp(w, -CLIP, CLIP);
+            const clip = if (i < OFF_FTB) FT_CLIP else CLIP;
+            t.params[i] = std.math.clamp(w, -clip, clip);
         }
     }
 
@@ -284,15 +288,16 @@ const Trainer = struct {
 
 fn quantize(params: []const f32, net: *nnue.Network) void {
     const q = struct {
-        fn f(x: f32, scale: f32) i16 {
-            return @intFromFloat(std.math.clamp(@round(x * scale), -32767, 32767));
+        fn f(comptime T: type, x: f32, scale: f32) T {
+            const lim: f32 = std.math.maxInt(T);
+            return @intFromFloat(std.math.clamp(@round(x * scale), -lim, lim));
         }
     }.f;
-    for (0..IN * H) |i| net.ft_w[i] = q(params[OFF_FTW + i], nnue.QA);
-    for (0..H) |i| net.ft_b[i] = q(params[OFF_FTB + i], nnue.QA);
+    for (0..IN * H) |i| net.ft_w[i] = q(nnue.FtW, params[OFF_FTW + i], nnue.QA);
+    for (0..H) |i| net.ft_b[i] = q(i16, params[OFF_FTB + i], nnue.QA);
     for (0..NB) |b| {
-        for (0..2 * H) |j| net.out_w[b][j] = q(params[OFF_OW + b * 2 * H + j], nnue.QB);
-        net.out_b[b] = q(params[OFF_OB + b], nnue.QA * nnue.QB);
+        for (0..2 * H) |j| net.out_w[b][j] = q(i16, params[OFF_OW + b * 2 * H + j], nnue.QB);
+        net.out_b[b] = q(i16, params[OFF_OB + b], nnue.QA * nnue.QB);
     }
 }
 
@@ -367,7 +372,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
             var it = std.mem.tokenizeScalar(u8, v, ',');
             while (it.next()) |path| try paths.append(gpa, path);
         } else if (p.flag(a, "--out")) |v| out_path = v
-        else if (p.int(usize, a, "--epochs")) |v| epochs = @max(v, 1)
+        else if (p.int(usize, a, "--epochs")) |v| epochs = v
         else if (p.int(usize, a, "--batch")) |v| batch_size = @max(v, 64)
         else if (p.float(a, "--lr")) |v| lr = v
         else if (p.float(a, "--wdl")) |v| wdl = v
@@ -380,7 +385,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
             return;
         }
     }
-    if (paths.items.len == 0 or out_path.len == 0) {
+    if (paths.items.len == 0 or out_path.len == 0 or (epochs == 0 and init_path.len == 0)) {
         out.print("{s}", .{help});
         return;
     }
@@ -512,6 +517,12 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
 
     try t.parallel(Trainer.lossWorker, @as([]const u32, val_idx));
     out.print("initial validation loss {d:.6}\n", .{t.meanLoss(val_n)});
+    if (epochs == 0) {
+        try saveNet(gpa, io, params, out_path);
+        const diff = try quantisationError(gpa, &t, val_idx[0..@min(val_idx.len, 2000)]);
+        out.print("quantised {s} -> {s}: vs float eval mean |diff| {d:.2} cp\n", .{ init_path, out_path, diff });
+        return;
+    }
 
     var step: usize = 0;
     const t0 = Io.Clock.awake.now(io);

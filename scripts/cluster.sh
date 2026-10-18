@@ -43,11 +43,14 @@ king_buckets_of() {
     if [ "$(od -An -tu4 -j4 -N4 "$1" | tr -d ' ')" -ge 2 ]; then od -An -tu4 -j16 -N4 "$1" | tr -d ' '; else echo 0; fi
 }
 
-build() { # [net]: build for that net's width and king buckets (default 256, none)
-    local h=256 kb=0
-    [ -n "${1:-}" ] && [ "$1" != hce ] && h=$(hidden_of "$1") && kb=$(king_buckets_of "$1")
-    zig build -Dtarget=aarch64-linux-musl -Dcpu=cortex_a76 -Dart=false -Dhidden="$h" -Dking-buckets="$kb" -p "$PREFIX_ARM"
-    zig build -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Dart=false -Dhidden="$h" -Dking-buckets="$kb" -p "$PREFIX_X86"
+# Int8 feature weights: format version 3.
+ft8_of() { if [ "$(od -An -tu4 -j4 -N4 "$1" | tr -d ' ')" -eq 3 ]; then echo true; else echo false; fi; }
+
+build() { # [net]: build for that net's width, king buckets and weight type (default 256, none, i16)
+    local h=256 kb=0 ft8=false
+    [ -n "${1:-}" ] && [ "$1" != hce ] && h=$(hidden_of "$1") && kb=$(king_buckets_of "$1") && ft8=$(ft8_of "$1")
+    zig build -Dtarget=aarch64-linux-musl -Dcpu=cortex_a76 -Dart=false -Dhidden="$h" -Dking-buckets="$kb" -Dft8="$ft8" -p "$PREFIX_ARM"
+    zig build -Dtarget=x86_64-linux-musl -Dcpu=x86_64_v3 -Dart=false -Dhidden="$h" -Dking-buckets="$kb" -Dft8="$ft8" -p "$PREFIX_X86"
 }
 
 # Copy binary, guard and net to the given hosts (default: all). Files are

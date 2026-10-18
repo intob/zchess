@@ -24,7 +24,7 @@ zig build test                # unit tests (perft, NNUE incremental updates, SEE
 | Move generation | `movegen.zig` | Fully legal (check masks + pin rays), ~400M nodes/s perft with bulk counting on an M2 Pro |
 | Search | `search.zig` | PVS, iterative deepening, aspiration windows, TT, null move, reverse futility, LMR, LMP, futility and SEE pruning, IIR, check extensions, killers and history, quiescence with SEE and delta pruning |
 | Threads | `uci.zig` | Lazy SMP over a lock-free shared TT (`tt.zig`, XOR-validated entries) |
-| Evaluation | `nnue.zig` | (768 → 256)×2 → 1, SCReLU, 8 output buckets, int16 quantisation, NEON through `@Vector`, incremental accumulator updates |
+| Evaluation | `nnue.zig` | (768 → 256)×2 → 1, SCReLU, 8 output buckets, int16 quantisation (or int8 feature weights, `-Dft8`), NEON through `@Vector`, incremental accumulator updates |
 | Bootstrap eval | `eval.zig` | Tapered PSTs and mobility, used only to generate the first data |
 
 UCI options: `Hash`, `Threads`, `EvalFile` (path to a `.nnue`), `UseNNUE`, `MultiPV`,
@@ -273,4 +273,10 @@ reached in 20+ games are kept (the coach's `MIN_THEORY`), about 360k of them, 25
 - **Network** (`.nnue`): `"ZCNN"`, version, hidden size and bucket count as
   u32 LE, then i16 LE arrays `ft_w[768·256]`, `ft_b[256]`,
   `out_w[8][512]`, `out_b[8]`. QA = 255, QB = 64, eval scale 400.
+  Version 2 adds a king-bucket count (u32) to the header. Version 3 keeps
+  that header (the count may be 0) and stores `ft_w` as i8, with QA = 128
+  and QB = 128: half the bytes for the accumulator updates to read, and less
+  quantisation error than version 1. A binary loads only the version it was
+  built for; `-Dnet` sets that from the file's header, otherwise `-Dft8`.
+  `train --init <ckpt> --epochs 0` re-exports a checkpoint in a binary's format.
 - **Checkpoint** (`.nnue.ckpt`): float32 parameters, for `train --init`.

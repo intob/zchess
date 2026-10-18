@@ -266,6 +266,27 @@ self-play SPRTs (+32.6, +44.1, +10.5). Recipe for the next generation: loss powe
   does all of the above (now this recipe, from a clean worktree, and on promotion it
   switches the cluster to the new net and logs where the generator changed).
 
+### Int8 feature weights (2026-10-18, Mac; built, no net trained yet)
+`-Dft8` (format version 3, `nnue.zig`): the feature transformer stores i8 weights at
+QA = 128 instead of i16 at QA = 255, and the output layer goes from QB = 64 to 128 (the
+headroom QA = 128 leaves in screluDot's i16 product). The trainer clips feature weights
+to ±127/128 in this build; `train --init <ckpt> --epochs 0` exports any checkpoint.
+- Speed, same tree (gen8w requantised once, stored as i8 vs the same values as i16):
+  **892 → 818 cycles/node, 1.09×**, bench 15 on the M2 Pro. NEON adds the rows with
+  saddw/ssubw (4 loads per 16 lanes instead of 6, half the row bytes); x86 gets
+  vpmovsxbw from memory. The eval (screluDot) is ALU-bound and doesn't change.
+- Accuracy, gen7w-p25-e30's float checkpoint exported both ways, mean |eval − float| on
+  53.6k gen8book positions: **i16 v1 7.13 cp, i8 v3 6.44 cp** (p50 5.9 → 5.3, p99 24.0 →
+  23.0). Most of v1's error is QB = 64; QB = 128 more than pays for the coarser
+  features. The tail is worse (max 43 → 173 cp) from the 0.2% of weights over ±0.99
+  that the export clips; a net trained with the clip doesn't have them. Requantising a
+  v1 *net* (no checkpoint) is worse: 11.6 cp, from rounding twice. gen8w's checkpoint
+  is gone, so gen8w stays v1 and the cluster runs it as before.
+- Not done: an SPRT. Plan: train gen9 with `FT8=1 scripts/genw.sh 9 ...` (it SPRTs
+  against gen8w as usual); to see what int8 itself is worth, export the gen9
+  checkpoint with a v1 trainer too (`train --init nets/gen9w.nnue.ckpt --epochs 0`)
+  and SPRT v3 vs v1 of the same net.
+
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
 can't compare a 512 net with a 256 net: build per size and SPRT the two binaries
