@@ -175,6 +175,15 @@ const ScoredMoves = struct {
     /// Leading moves already in pick order (the TT move, put first by scoreMoves).
     ready: usize = 0,
 
+    /// An empty list. `ScoredMoves{}` memsets all 1.5 KB of it (the
+    /// undefined arrays included), at every node.
+    inline fn init() ScoredMoves {
+        var sm: ScoredMoves = undefined;
+        sm.list.len = 0;
+        sm.ready = 0;
+        return sm;
+    }
+
     /// Selection sort, one step: the best remaining move (the first one on
     /// ties) is swapped to `i` and returned; scores[i] is then its score.
     /// The best score stays in a register: reloading scores[best] put a load
@@ -196,6 +205,32 @@ const ScoredMoves = struct {
         self.scores[best] = self.scores[i];
         self.scores[i] = best_score;
         return m;
+    }
+
+    /// Drop the moves from i on that will all be pruned, once every quiet is
+    /// going to be: the quiets, and the noisy moves failing SEE at
+    /// `see_threshold` (the capture pruning, which depends on nothing else).
+    /// Noisy moves left here are the SEE losers and underpromotions, which
+    /// score below every quiet (history stays within ±3 × 16384), so the picks
+    /// would have taken all the quiets first. When the kept moves' scores are
+    /// distinct the order they come out in is fixed whatever the quiet picks
+    /// swapped around, and the search sees exactly the same moves in the same
+    /// order. A tie can come out either way depending on the swaps, so then
+    /// nothing is dropped.
+    fn dropQuiets(self: *ScoredMoves, i: usize, pos: *const Position, see_threshold: i32) void {
+        var moves: [256]Move = undefined;
+        var scores: [256]i32 = undefined;
+        var n: usize = 0;
+        for (self.list.moves[i..self.list.len], self.scores[i..self.list.len]) |m, s| {
+            if (!m.isNoisy() or !see(pos, m, see_threshold)) continue;
+            for (scores[0..n]) |t| if (t == s) return;
+            moves[n] = m;
+            scores[n] = s;
+            n += 1;
+        }
+        @memcpy(self.list.moves[i..][0..n], moves[0..n]);
+        @memcpy(self.scores[i..][0..n], scores[0..n]);
+        self.list.len = i + n;
     }
 
     /// Whether the capture or queen promotion just picked at `i` passed SEE
@@ -280,6 +315,13 @@ pub const Searcher = struct {
         if (ply < back) return null;
         const prev = self.moved[ply - back];
         return if (prev == NO_CONT) null else &self.cont_hist[prev][idx];
+    }
+
+    /// Continuation-history row of the move `back` plies before `ply`.
+    inline fn contRow(self: *Searcher, ply: usize, back: usize) ?*const [12 * 64]i16 {
+        if (ply < back) return null;
+        const prev = self.moved[ply - back];
+        return if (prev == NO_CONT) null else &self.cont_hist[prev];
     }
 
     /// Main plus continuation history of a quiet move.
@@ -384,6 +426,11 @@ pub const Searcher = struct {
 
     fn scoreMoves(self: *Searcher, pos: *const Position, sm: *ScoredMoves, tt_move: Move, ply: usize) void {
         const killers = self.killers[ply];
+        // quietHistory's tables, looked up once rather than per move (the
+        // compiler can't tell the score stores don't change them).
+        const hist = &self.history[pos.side];
+        const cont1 = self.contRow(ply, 1);
+        const cont2 = self.contRow(ply, 2);
         var tt_index: ?usize = null;
         for (sm.list.slice(), 0..) |m, i| {
             var s: i32 = 0;
@@ -403,7 +450,10 @@ pub const Searcher = struct {
             } else if (m.eql(killers[1])) {
                 s = 800_000;
             } else {
-                s = self.quietHistory(pos, m, ply);
+                const idx = contIndex(pos, m);
+                s = hist[m.from()][m.to()];
+                if (cont1) |c| s += c[idx];
+                if (cont2) |c| s += c[idx];
             }
             sm.scores[i] = s;
         }
@@ -632,7 +682,7 @@ pub const Searcher = struct {
         // Internal iterative reduction: no TT move means poor ordering here.
         if (depth >= 4 and tt_move.data == 0 and (pv_node or cut_node)) depth -= 1;
 
-        var sm = ScoredMoves{};
+        var sm = ScoredMoves.init();
         movegen.generate(pos, &sm.list, .all);
         if (sm.list.len == 0) return if (in_check) -MATE + pi else 0;
         self.scoreMoves(pos, &sm, tt_move, ply);
@@ -643,8 +693,10 @@ pub const Searcher = struct {
         var n_quiets: usize = 0;
         var searched: usize = 0;
         const has_material = pos.hasNonPawnMaterial(pos.side);
+        var quiets_dropped = false;
 
-        for (0..sm.list.len) |i| {
+        var i: usize = 0;
+        while (i < sm.list.len) : (i += 1) {
             const m = sm.pick(i);
             if (root and self.n_excluded > 0 and self.isExcluded(m)) continue;
             if (verifying and m.eql(excluded)) continue;
@@ -652,11 +704,17 @@ pub const Searcher = struct {
 
             if (!root and best_score > -MATE_BOUND and has_material) {
                 if (quiet) {
-                    // Late move pruning.
+                    // Late move pruning and futility pruning: once either holds it
+                    // holds for every later quiet (searched and alpha only grow),
+                    // and only the noisy moves passing the SEE test below are left.
                     const lmp_limit: usize = @intCast(@divTrunc(3 + depth * depth, 2 - imp));
-                    if (!pv_node and depth <= 8 and searched >= lmp_limit) continue;
-                    // Futility pruning.
-                    if (!in_check and depth <= 8 and static_eval + 100 + 100 * depth <= alpha) continue;
+                    if ((!pv_node and depth <= 8 and searched >= lmp_limit) or
+                        (!in_check and depth <= 8 and static_eval + 100 + 100 * depth <= alpha))
+                    {
+                        if (!quiets_dropped) sm.dropQuiets(i + 1, pos, -100 * depth);
+                        quiets_dropped = true;
+                        continue;
+                    }
                     // SEE pruning of quiets that hang material.
                     if (depth <= 8 and !see(pos, m, -70 * depth)) continue;
                 } else {
@@ -783,7 +841,7 @@ pub const Searcher = struct {
             best = stand_pat;
         }
 
-        var sm = ScoredMoves{};
+        var sm = ScoredMoves.init();
         if (in_check) movegen.generate(pos, &sm.list, .all) else movegen.generate(pos, &sm.list, .noisy);
         if (in_check and sm.list.len == 0) return -MATE + @as(i32, @intCast(ply));
         self.scoreMoves(pos, &sm, tt_move, ply);

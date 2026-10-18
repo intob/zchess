@@ -56,11 +56,14 @@ inline fn addPromos(list: *MoveList, from: Square, to: Square, capture: bool, co
 }
 
 inline fn addTargets(list: *MoveList, from: Square, targets: u64, enemy: u64) void {
+    // The count in a local: through `list` it's stored and reloaded per move.
+    var n = list.len;
     var t = targets;
-    while (t != 0) {
+    while (t != 0) : (n += 1) {
         const to = bb.popLsb(&t);
-        list.add(Move.init(from, to, if (enemy & bb.bit(to) != 0) Move.CAPTURE else Move.QUIET));
+        list.moves[n] = Move.init(from, to, if (enemy & bb.bit(to) != 0) Move.CAPTURE else Move.QUIET);
     }
+    list.len = n;
 }
 
 pub fn generate(pos: *const Position, list: *MoveList, comptime mode: Mode) void {

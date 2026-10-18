@@ -200,6 +200,18 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
   dot product runs two sums. Tried and dropped: comptime side-to-move movegen
   (−2%, code size), vectorised or packed-key pickers (slower than the scalar
   one), both perspectives in one update or eval loop, prefetching the weight rows.
+- [x] Speed, same search, round 2 (2026-10-18, branch `perf/ft8`): bench output identical
+  to bc6f8b7 at depths 8–15 (gen8w and gen7w-p25-e30 nets, HCE). **1.17× fewer cycles**
+  (960 → 821 per node, median of 10 alternating bench 15 runs), 3.34–3.52M → 3.96–3.99M nps.
+  - Once late-move or futility pruning starts pruning quiets at a node it prunes every
+    later one (searched and alpha only grow), but each was still picked, a full scan of
+    the list, just to be skipped: the picker was 12.7% of the time. Now the rest of the
+    list is cut to the noisy moves that pass the capture SEE test. They all score below
+    every quiet, so the picks would have reached them in the same order, unless two of
+    them tie; then nothing is cut (the order of a tie depends on the swaps).
+  - `ScoredMoves{}` memset its 1.5 KB (undefined arrays included) at every node: 3.4%.
+  - Move scoring looks up the history rows once per node, movegen keeps the list count
+    in a register, and makeMove's checkers skip the other side's pawns and the king.
 
 ### Loss power, king buckets, longer schedule (started 2026-10-12 18:52, Mac + bitch-box)
 New in the trainer and engine:

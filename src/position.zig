@@ -203,6 +203,18 @@ pub const Position = struct {
             (atk.rook(sq, occ) & rq);
     }
 
+    /// The pieces giving check to `c`'s king: attackersTo(king) & the other
+    /// colour, without the king term (kings are never adjacent) or the other
+    /// colour's pawns.
+    inline fn checkersOf(p: *const Position, c: Color) u64 {
+        const ksq = p.kingSq(c);
+        const occ = p.occupied();
+        return ((atk.pawn[c][ksq] & p.pieces[bb.PAWN]) |
+            (atk.knight[ksq] & p.pieces[bb.KNIGHT]) |
+            (atk.bishop(ksq, occ) & (p.pieces[bb.BISHOP] | p.pieces[bb.QUEEN])) |
+            (atk.rook(ksq, occ) & (p.pieces[bb.ROOK] | p.pieces[bb.QUEEN]))) & p.colors[c ^ 1];
+    }
+
     /// Is `sq` attacked by pieces of color `by` given occupancy `occ`?
     pub inline fn attackedBy(p: *const Position, sq: Square, by: Color, occ: u64) bool {
         const them = p.colors[by];
@@ -283,7 +295,7 @@ pub const Position = struct {
         p.side = them;
         p.key ^= zobrist.side;
         if (us == BLACK) p.fullmove += 1;
-        p.checkers = p.attackersTo(p.kingSq(them), p.occupied()) & p.colors[us];
+        p.checkers = p.checkersOf(them);
         return p;
     }
 
