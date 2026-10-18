@@ -60,7 +60,9 @@ if [ ! -f "$MAIN/$NET" ]; then
     # shellcheck disable=SC2086 # TRAIN_FLAGS is deliberately split into words
     bins/train512/bin/zchess train --data "$WINDOW" --out "$NET" $TRAIN_FLAGS
     bins/train512/bin/zchess viz "$NET" || true
-    cp "$NET" "$MAIN/$NET"
+    # The float checkpoint too (git-ignored): it can be exported to another net
+    # format later (`train --init <ckpt> --epochs 0`), and the worktree is removed.
+    cp "$NET" "$NET.ckpt" "$MAIN/nets/"
     log "trained $NET"
 fi
 cp "$MAIN/$NET" "$NET"

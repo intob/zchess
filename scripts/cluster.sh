@@ -6,8 +6,9 @@
 #
 #   scripts/cluster.sh deploy <net>             build for Pi 5 and copy binary + net
 #   scripts/cluster.sh start <gen> <net> <nodes> [book]  deploy, then run datagen for that generation
-#                                               as a systemd service (survives reboots and crashes)
-#   scripts/cluster.sh status                   last progress line from every host
+#                                               as a systemd service (survives reboots and crashes);
+#                                               a host with ~/zchess/hold is set up but not started
+#   scripts/cluster.sh status                  last progress line from every host
 #   scripts/cluster.sh stop                     stop datagen everywhere and disable the service
 #   scripts/cluster.sh collect <gen>            stop, fetch and append each host's data to data/gen<gen>.bin
 #   scripts/cluster.sh count <gen>              total positions generated so far across hosts
@@ -117,6 +118,14 @@ start() {
         printf 'GEN=%s\nNET=%s\nNODES=%s\nBOOK_OPT="%s"\nGUARD_HIGH=%s\nGUARD_LOW=%s\n' \
             "$gen" "$remote_net" "$nodes" "$book_opt" "$GUARD_HIGH" "$GUARD_LOW" |
             $SSH "$h" "cat > $REMOTE/datagen.env"
+        # A held host (~/zchess/hold, e.g. bitch-box during an SPRT queue) gets the
+        # binary, net, settings and unit but isn't started: whatever holds it runs
+        # `rm ~/zchess/hold; sudo systemctl enable --now zchess-datagen` when done.
+        local held=0 run="sudo -n systemctl enable --now zchess-datagen >/dev/null 2>&1"
+        if $SSH "$h" "test -f $REMOTE/hold" 2>/dev/null; then
+            held=1
+            run=true
+        fi
         # systemd unit: restarts datagen after reboots, power cuts and crashes.
         local user dir
         user=$($SSH "$h" whoami)
@@ -136,8 +145,12 @@ start() {
             '' \
             '[Install]' \
             'WantedBy=multi-user.target' |
-            $SSH "$h" "sudo -n tee /etc/systemd/system/zchess-datagen.service >/dev/null && sudo -n systemctl daemon-reload && sudo -n systemctl enable --now zchess-datagen >/dev/null 2>&1"; then
-            echo "cluster: $h generating gen$gen as a service ($remote_net, $nodes nodes, thermal guard ${GUARD_HIGH}C/${GUARD_LOW}C)"
+            $SSH "$h" "sudo -n tee /etc/systemd/system/zchess-datagen.service >/dev/null && sudo -n systemctl daemon-reload && $run"; then
+            if [ "$held" = 1 ]; then
+                echo "cluster: $h is held ($REMOTE/hold): set up for gen$gen ($remote_net, $nodes nodes), not started"
+            else
+                echo "cluster: $h generating gen$gen as a service ($remote_net, $nodes nodes, thermal guard ${GUARD_HIGH}C/${GUARD_LOW}C)"
+            fi
         else
             echo "cluster: $h: could not install the service (needs passwordless sudo)"
         fi
