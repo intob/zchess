@@ -1,1 +1,1 @@
-nets/gen8w.nnue
+nets/gen9w.nnue

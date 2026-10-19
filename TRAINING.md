@@ -294,7 +294,7 @@ self-play SPRTs (+32.6, +44.1, +10.5). Recipe for the next generation: loss powe
   does all of the above (now this recipe, from a clean worktree, and on promotion it
   switches the cluster to the new net and logs where the generator changed).
 
-### Int8 feature weights (2026-10-18, Mac; built, no net trained yet)
+### Int8 feature weights (2026-10-18, Mac)
 `-Dft8` (format version 3, `nnue.zig`): the feature transformer stores i8 weights at
 QA = 128 instead of i16 at QA = 255, and the output layer goes from QB = 64 to 128 (the
 headroom QA = 128 leaves in screluDot's i16 product). The trainer clips feature weights
@@ -310,10 +310,38 @@ to ±127/128 in this build; `train --init <ckpt> --epochs 0` exports any checkpo
   that the export clips; a net trained with the clip doesn't have them. Requantising a
   v1 *net* (no checkpoint) is worse: 11.6 cp, from rounding twice. gen8w's checkpoint
   is gone, so gen8w stays v1 and the cluster runs it as before.
-- Not done: an SPRT. Plan: train gen9 with `FT8=1 scripts/genw.sh 9 ...` (it SPRTs
-  against gen8w as usual); to see what int8 itself is worth, export the gen9
-  checkpoint with a v1 trainer too (`train --init nets/gen9w.nnue.ckpt --epochs 0`)
-  and SPRT v3 vs v1 of the same net.
+- gen9w (below) is the first net trained this way, with `FT8=1 scripts/genw.sh 9 ...`.
+  To see what int8 itself is worth, its checkpoint was also exported with a v1 trainer
+  (`train --init nets/gen9w.nnue.ckpt --epochs 0`, `nets/gen9w-v1.nnue`). An SPRT of v3
+  vs v1, the same net in both formats, 8+0.08 [0, 5], started on the Mac on 2026-10-19
+  at 20:09. Both engines are built from a clean worktree at afa7a74.
+
+### gen9w (2026-10-19, Mac + cluster)
+- Data: gen9book, 151.2M positions: the Mac 106.1M (`scripts/mac-datagen.sh`, all
+  gen8w), pi1 16.7M, pi5 17.8M, bitch-box 10.5M. The first 15.7M (cluster) are gen7w's,
+  the rest gen8w's. Window: gen7book + gen8book + gen9book, 400.6M positions.
+- Recipe: gen8w's, `--power 2.5 --epochs 30 --seed 1`, 512 wide, plus int8 feature
+  weights (`FT8=1`, format v3). 4 h 54 min on the Mac.
+- Validation (100,021 positions from 968 held-out games): 0.001494 at epoch 1 →
+  0.001239 at epoch 30, still falling at the end. Unlike gen8w's, it stayed about
+  0.0001 *above* train loss (0.001136 at epoch 30) throughout. These are other games
+  than gen8w's, so the two can't be compared directly.
+- [x] gen9w vs gen8w, 8+0.08 [0, 5]: **+10.6 ± 5.6, H1** at 3946 games
+  (+695 =2676 −575). **Promoted** (`nets/best.txt`). The step is a third of gen8w's +30.
+  The SPRT engines, the cluster binary and the En Croissant engine were built from a
+  clean worktree at 4c08cc4: time management, but not capture history.
+- gen10book: the cluster (pi1, pi5) restarted on it with gen8w at 04:04 and switched to
+  gen9w at 11:53, so **the first 7.1M gen10book positions are from gen8w**. The Mac
+  joined with gen9w at 17:35. bitch-box is held for the search SPRT queue; pi2–4 and
+  pi6 are still unreachable.
+- [x] gen9q: the same window, recipe and seed with `train --quiet-only`, which drops
+  positions in check or with a SEE > 0 capture (kept 363.3M of 400.6M, 90.7%). Against
+  gen9w: **−22.2 ± 8.8, H0** at 1564 games (+203 =1058 −303), with both engines built
+  from afa7a74. Not promoted, and the filter stays off. A guess, untested: the search
+  also uses the static eval at nodes that aren't quiet (futility, reverse futility,
+  qsearch stand-pat), so the net needs those positions. Its validation loss (0.000939)
+  is on quiet positions only, so it isn't comparable.
+- Not done: a gauntlet rating for gen9w, and the v3-vs-v1 SPRT above.
 
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
