@@ -222,6 +222,12 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
   capped at the hard limit. 1 thread, vs faef397 on bitch-box: **+22.1 ± 8.5, H1** at
   1924 games (+397 =1252 −275). Uses slightly less time on average (428 vs 441 ms/move
   over 60 positions). Fixed-depth bench unchanged (gen8w and HCE). Merged 2026-10-18.
+- [x] Capture history (branch `search/caphist`): `cap_hist[piece×to][victim]`, added /16
+  to the capture ordering score (at most ±1024, so it reorders captures of similar value
+  but never puts a piece below a pawn), with a bonus on capture cutoffs and a malus for
+  captures tried before one; qsearch uses the ordering without updating it. 1 thread, vs
+  faef397 on bitch-box: **+7.2 ± 4.5, H1** at 6426 games (+1160 =4239 −1027), although
+  fixed-depth node counts had come out noisy and mostly higher. Merged 2026-10-19.
 
 ### Loss power, king buckets, longer schedule (started 2026-10-12 18:52, Mac + bitch-box)
 New in the trainer and engine:

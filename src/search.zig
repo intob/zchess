@@ -298,6 +298,9 @@ pub const Searcher = struct {
     /// for the moves one and two plies back. Zeroed in create (too big for a
     /// comptime default).
     cont_hist: [12 * 64][12 * 64]i16 = undefined,
+    /// Capture history: [moving piece * 64 + to][captured piece type], how
+    /// often a capture has caused a cutoff (orders captures of similar value).
+    cap_hist: [12 * 64][6]i16 = undefined,
     /// Continuation index of the move played at each ply.
     moved: [MAX_PLY + 2]u16 = undefined,
     killers: [MAX_PLY + 2][2]Move = undefined,
@@ -320,6 +323,13 @@ pub const Searcher = struct {
     pub fn clearHistory(self: *Searcher) void {
         self.history = std.mem.zeroes([2][64][64]i32);
         @memset(std.mem.sliceAsBytes(&self.cont_hist), 0);
+        @memset(std.mem.sliceAsBytes(&self.cap_hist), 0);
+    }
+
+    /// Capture-history entry of capture `m` (en passant takes a pawn).
+    inline fn capEntry(self: *Searcher, pos: *const Position, m: Move) *i16 {
+        const victim: usize = if (m.flag() == Move.EP_CAPTURE) bb.PAWN else bb.pieceType(pos.board[m.to()]);
+        return &self.cap_hist[contIndex(pos, m)][victim];
     }
 
     inline fn contIndex(pos: *const Position, m: Move) u16 {
@@ -461,6 +471,8 @@ pub const Searcher = struct {
                     s += if (m.promoType() == bb.QUEEN) 8000 else -3_000_000;
                 }
                 s += if (see(pos, m, 0)) 2_000_000 else -1_000_000;
+                // At most ±1024: reorders captures of similar value, never a piece below a pawn.
+                if (m.isCapture()) s += @divTrunc(@as(i32, self.capEntry(pos, m).*), 16);
             } else if (m.eql(killers[0])) {
                 s = 900_000;
             } else if (m.eql(killers[1])) {
@@ -743,6 +755,8 @@ pub const Searcher = struct {
         var best_move = Move.none;
         var quiets: [64]Move = undefined;
         var n_quiets: usize = 0;
+        var captures: [32]Move = undefined;
+        var n_captures: usize = 0;
         var searched: usize = 0;
         const has_material = pos.hasNonPawnMaterial(pos.side);
         var quiets_dropped = false;
@@ -840,19 +854,27 @@ pub const Searcher = struct {
                         self.pv_len[ply] = @max(child_len, ply + 1);
                     }
                     if (score >= beta) {
+                        const bonus = @min(16 * depth * depth + 32 * depth, 1500);
                         if (quiet) {
                             const k = &self.killers[ply];
                             if (!k[0].eql(m)) {
                                 k[1] = k[0];
                                 k[0] = m;
                             }
-                            const bonus = @min(16 * depth * depth + 32 * depth, 1500);
                             self.updateQuietHistory(pos, m, ply, bonus);
                             for (quiets[0..n_quiets]) |q| self.updateQuietHistory(pos, q, ply, -bonus);
+                        } else if (m.isCapture()) {
+                            updateHistory16(self.capEntry(pos, m), bonus);
                         }
+                        // Captures tried before the cutoff didn't make it.
+                        for (captures[0..n_captures]) |c| updateHistory16(self.capEntry(pos, c), -bonus);
                         break;
                     }
                 }
+            }
+            if (!quiet and m.isCapture() and n_captures < captures.len) {
+                captures[n_captures] = m;
+                n_captures += 1;
             }
             if (quiet and n_quiets < quiets.len) {
                 quiets[n_quiets] = m;
