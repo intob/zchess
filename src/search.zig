@@ -781,6 +781,8 @@ pub const Searcher = struct {
                         quiets_dropped = true;
                         continue;
                     }
+                    // History pruning: quiets that have kept failing here.
+                    if (!pv_node and depth <= 4 and self.quietHistory(pos, m, ply) < -2048 * depth) continue;
                     // SEE pruning of quiets that hang material.
                     if (depth <= 8 and !see(pos, m, -70 * depth)) continue;
                 } else {
