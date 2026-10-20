@@ -41,6 +41,18 @@ pub const Limits = struct {
 
 pub const MAX_MULTIPV = 16;
 
+/// Lazy SMP depth skipping (Stockfish's pattern): helper `thread_index`
+/// skips some iterations, so the helpers spread over depths instead of all
+/// repeating the main thread's. The main thread and depth 1 never skip.
+const skip_size = [20]i32{ 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4 };
+const skip_phase = [20]i32{ 0, 1, 0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 6, 7 };
+
+fn skipDepth(thread_index: usize, depth: i32) bool {
+    if (thread_index == 0 or depth <= 1) return false;
+    const i = (thread_index - 1) % skip_size.len;
+    return @mod(@divTrunc(depth + skip_phase[i], skip_size[i]), 2) != 0;
+}
+
 /// One reported line (MultiPV): its first move, score and principal variation.
 pub const Line = struct {
     move: Move,
@@ -204,6 +216,10 @@ pub const Searcher = struct {
     pondering: ?*std.atomic.Value(bool) = null,
     clock_offset_ms: std.atomic.Value(i64) = .init(0),
     root_depth: i32 = 0,
+    /// Lazy SMP: 0 for the main thread, 1.. for helpers (see `skipDepth`).
+    thread_index: usize = 0,
+    /// The result of this thread's last search (for `vote`).
+    last: Result = .{ .move = Move.none, .score = 0, .depth = 0 },
     root_best: Move = Move.none,
     /// Number of lines to search and report (UCI MultiPV); 1 = normal search.
     multipv: usize = 1,
@@ -401,6 +417,8 @@ pub const Searcher = struct {
         self.stopped = false;
         self.clock_offset_ms.store(0, .monotonic);
         self.root_best = Move.none;
+        // A search with no legal move returns early: no stale vote.
+        self.last = .{ .move = Move.none, .score = 0, .depth = 0 };
         for (&self.killers) |*k| k.* = .{ Move.none, Move.none };
         self.was_null[0] = false;
         for (&self.singular) |*m| m.* = Move.none;
@@ -417,6 +435,7 @@ pub const Searcher = struct {
         self.n_lines = 0;
         var depth: i32 = 1;
         iterations: while (depth <= limits.depth) : (depth += 1) {
+            if (skipDepth(self.thread_index, depth)) continue;
             self.root_depth = depth;
             self.seldepth = 0;
             // Line k is the best move once lines 0..k-1 are excluded at the root.
@@ -459,7 +478,43 @@ pub const Searcher = struct {
         }
         self.n_excluded = 0;
         self.shared_nodes.store(self.nodes, .monotonic);
+        self.last = best;
         return best;
+    }
+
+    /// The move to play after a multi-threaded search: each thread's last
+    /// result votes for its move, weighted by how far its score is above the
+    /// worst thread's and by its depth (Stockfish's vote), so helpers that got
+    /// deeper or saw more can overrule the main thread. A mate found by any
+    /// thread wins outright (the fastest one).
+    pub fn vote(threads: []const *Searcher) Result {
+        var min: i32 = std.math.maxInt(i32);
+        for (threads) |t| if (t.last.move.data != 0) {
+            min = @min(min, t.last.score);
+        };
+        var best: usize = 0;
+        var best_votes: i64 = -1;
+        for (threads, 0..) |t, i| {
+            if (t.last.move.data == 0) continue;
+            if (t.last.score >= MATE_BOUND) {
+                if (threads[best].last.score < MATE_BOUND or t.last.score > threads[best].last.score) {
+                    best = i;
+                    best_votes = std.math.maxInt(i64);
+                }
+                continue;
+            }
+            if (best_votes == std.math.maxInt(i64)) continue;
+            var votes: i64 = 0;
+            for (threads) |u| {
+                if (!u.last.move.eql(t.last.move)) continue;
+                votes += @as(i64, u.last.score - min + 14) * @max(u.last.depth, 1);
+            }
+            if (votes > best_votes or (votes == best_votes and t.last.score > threads[best].last.score)) {
+                best = i;
+                best_votes = votes;
+            }
+        }
+        return threads[best].last;
     }
 
     inline fn isExcluded(self: *const Searcher, m: Move) bool {

@@ -126,7 +126,10 @@ pub const Engine = struct {
         if (e.coach_searcher) |c| e.gpa.destroy(c);
         e.coach_searcher = null;
         for (0..@max(n, 1)) |_| try e.searchers.append(e.gpa, try search.Searcher.create(e.gpa, e.io, &e.tt, e.activeNet(), &e.stop));
-        for (e.searchers.items) |s| s.peers = e.searchers.items;
+        for (e.searchers.items, 0..) |s, i| {
+            s.peers = e.searchers.items;
+            s.thread_index = i;
+        }
         e.searchers.items[0].out = e.out;
         e.searchers.items[0].multipv = e.multipv;
         e.searchers.items[0].pondering = &e.pondering;
@@ -155,13 +158,16 @@ pub const Engine = struct {
             helpers[i] = std.Thread.spawn(.{}, helperMain, .{ s, hl }) catch null;
         }
         main.setPosition(&e.pos, e.game_keys.items);
-        const r = main.search(limits);
+        const r_main = main.search(limits);
         // UCI: no bestmove while pondering until ponderhit or stop.
         while (e.pondering.load(.monotonic) and !e.stop_cmd.load(.monotonic)) {
             e.io.sleep(.fromMilliseconds(2), .awake) catch {};
         }
         e.stop.store(true, .monotonic);
         for (helpers[0 .. e.searchers.items.len - 1]) |h| if (h) |t| t.join();
+        // Several threads: the move they vote for (see search.vote); with
+        // MultiPV the main thread's lines stand.
+        const r = if (e.searchers.items.len > 1 and e.multipv == 1) search.Searcher.vote(e.searchers.items) else r_main;
         e.finishCoach();
         e.recordMove(r.move, e.coachOpponent(r.move));
         var buf: [5]u8 = undefined;
