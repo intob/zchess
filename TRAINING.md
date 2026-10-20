@@ -228,6 +228,12 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
   captures tried before one; qsearch uses the ordering without updating it. 1 thread, vs
   faef397 on bitch-box: **+7.2 ± 4.5, H1** at 6426 games (+1160 =4239 −1027), although
   fixed-depth node counts had come out noisy and mostly higher. Merged 2026-10-19.
+- [x] TT buckets (branch `search/ttbucket`): 4 entries per 64-byte cluster; a hit on the
+  same key keeps the old replacement rule, otherwise the entry with the lowest
+  depth − 8·age gap goes (empty ones first). −1.8% nodes at depth 12 and −6.7% at depth
+  14 on 40 positions at 16 MB, same nps. 1 thread, vs faef397 on bitch-box: **+1.2 ± 3.0**
+  after 15160 games (+2605 =10002 −2553, LLR −0.18), stopped 2026-10-20. Not merged:
+  at most a couple of Elo with 16 MB hash at this time control.
 
 ### Loss power, king buckets, longer schedule (started 2026-10-12 18:52, Mac + bitch-box)
 New in the trainer and engine:
@@ -312,9 +318,12 @@ to ±127/128 in this build; `train --init <ckpt> --epochs 0` exports any checkpo
   is gone, so gen8w stays v1 and the cluster runs it as before.
 - gen9w (below) is the first net trained this way, with `FT8=1 scripts/genw.sh 9 ...`.
   To see what int8 itself is worth, its checkpoint was also exported with a v1 trainer
-  (`train --init nets/gen9w.nnue.ckpt --epochs 0`, `nets/gen9w-v1.nnue`). An SPRT of v3
-  vs v1, the same net in both formats, 8+0.08 [0, 5], started on the Mac on 2026-10-19
-  at 20:09. Both engines are built from a clean worktree at afa7a74.
+  (`train --init nets/gen9w.nnue.ckpt --epochs 0`, `nets/gen9w-v1.nnue`).
+- [x] gen9w v3 vs v1, the same net in both formats, 8+0.08 [0, 5], on the Mac, both
+  engines built from a clean worktree at afa7a74: **+9.2 ± 5.0, H1** at 4256 games
+  (+658 =3052 −546). The 1.09× speed and the lower quantisation error together are
+  worth about 9 Elo, so int8 feature weights stay on (`FT8=1`) for every net with a
+  checkpoint.
 
 ### gen9w (2026-10-19, Mac + cluster)
 - Data: gen9book, 151.2M positions: the Mac 106.1M (`scripts/mac-datagen.sh`, all
@@ -341,7 +350,48 @@ to ±127/128 in this build; `train --init <ckpt> --epochs 0` exports any checkpo
   also uses the static eval at nodes that aren't quiet (futility, reverse futility,
   qsearch stand-pat), so the net needs those positions. Its validation loss (0.000939)
   is on quiet positions only, so it isn't comparable.
-- Not done: a gauntlet rating for gen9w, and the v3-vs-v1 SPRT above.
+- Not done: a gauntlet rating for gen9w.
+
+### King buckets with a factoriser (started 2026-10-19 23:25, Mac)
+gen7w-kb8 lost (−60) from memorising its data: 8× the input weights on 147M positions.
+Branch `train/factoriser` (worktree `~/zchess-kb`) retries king buckets the standard way:
+- **Factoriser** (`train.zig`, builds with more than one king bucket): one more 768 × H
+  block of feature weights that every bucket shares. A bucket's weight is its own plus
+  the shared one, so the shared part learns from every position and each bucket only
+  learns how its king squares differ. The passes run on the merged weights; the shared
+  block's gradient is the sum of the buckets'. Buckets start at zero and the shared block
+  takes the random start. With int8 features each bucket weight is clamped so that the
+  merged one fits in ±127/128. Nets are exported merged (the engine is unchanged);
+  checkpoints keep the shared block. The trainer runs at ~461k positions/s with 4
+  buckets, against ~660k without (bigger weight and gradient arrays), so ~7 h for gen9w's
+  window.
+- **Held-out test set**, `train --test <files>`: scored after every epoch with the training
+  loss, never trained on. `data/test10.bin` is the first 2,000,043 positions (whole games,
+  all gen9w's) of the Mac's gen10book, taken out of `gen10book-mac.staged` so gen10 nets
+  won't train on them either. Unlike the validation split it comes from other games
+  and a later generation, so it's the number to compare nets trained on the same window
+  with the same loss power and WDL by. A net's checkpoint is scored with
+  `train --init <ckpt> --epochs 0 --data <any> --test data/test10.bin --power 2.5`.
+- **Accumulator cache** (`nnue.Cache`, a "Finny table"): for each perspective and king
+  view, the accumulator last built for it and its pieces' bitboards, so a king move into
+  another view adds and removes only what changed since that view was last used. Bench
+  node counts are identical; with 4 buckets 3.33M → 3.63M nps (bench 14, M2 Pro), so a
+  4-bucket net costs ~5% speed instead of ~13%. Reset at the start of each search.
+- Small check (4M gen9book positions, 4 epochs, power 2.5): test loss 0.003118 without
+  buckets, **0.002852 with 4 factorised buckets**; quantisation error the same (6.3 cp).
+- [x] gen9w-kb4f: gen9w's window, recipe and seed with 4 factorised king buckets and
+  int8 features (`kb-run.sh`, untracked, log `kb.log`). 7 h 5 min on the Mac. At epoch 30,
+  against gen9w: train loss 0.001010 vs 0.001136, validation (the same 968 games)
+  **0.001165 vs 0.001239 (−6%)**, test10 0.001297 vs 0.001269 (+2%). SPRT vs gen9w (v3),
+  8+0.08 [0, 5], engine with the accumulator cache: **+2.1 ± 3.5** after 9996 games
+  (+1704 =6649 −1643, LLR 0.67), stopped 2026-10-20 to give the Mac back to datagen. Not
+  promoted: at most a few Elo, though the factoriser itself works (no sign of kb8's
+  memorising).
+- test10 turned out to be the wrong yardstick against gen9w: its scores are gen9w's own
+  searches, which its static eval agrees with more than any other net's does, so it
+  favours gen9w and maybe nets shaped like it. A guess that would explain the +2% while
+  the validation games say −6%. To compare against the net that generated it, re-score
+  it with another engine (e.g. Stockfish) first; between new nets it's fair.
 
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`

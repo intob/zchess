@@ -1,0 +1,7 @@
+sprt: gen9w-kb4f-vs-gen9w (/Users/joey/zchess-kb/bins/gen9w-kb4f/bin/zchess) vs base (bins/gen9w-v3/bin/zchess), tc=8+0.08, SPRT [0, 5], concurrency 10 -> sprt/20261020-0631-gen9w-kb4f-vs-gen9w
+LLR: 0.72 (24.5%) (-2.94, 2.94) [0.00, 5.00]
+Results of gen9w-kb4f-vs-gen9w vs base (8+0.08, 1t, 16MB, openings.epd):
+Elo: 2.12 +/- 3.52, nElo: 4.11 +/- 6.81
+Games: 9996, Wins: 1704, Losses: 1643, Draws: 6649, Points: 5028.5 (50.31 %)
+Ptnml(0-2): [78, 981, 2828, 1024, 87], WL/DD Ratio: 0.22
+LLR: 0.67 (22.6%) (-2.94, 2.94) [0.00, 5.00]

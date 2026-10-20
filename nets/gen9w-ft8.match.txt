@@ -1,0 +1,7 @@
+sprt: gen9w-v3-vs-v1 (bins/gen9w-v3/bin/zchess) vs base (bins/gen9w-v1/bin/zchess), tc=8+0.08, SPRT [0, 5], concurrency 10 -> sprt/20261019-2009-gen9w-v3-vs-v1
+Results of gen9w-v3-vs-v1 vs base (8+0.08, 1t, 16MB, openings.epd):
+Elo: 9.15 +/- 4.95, nElo: 19.29 +/- 10.44
+Games: 4256, Wins: 658, Losses: 546, Draws: 3052, Points: 2184.0 (51.32 %)
+Ptnml(0-2): [21, 332, 1319, 426, 30], WL/DD Ratio: 0.15
+LLR: 2.95 (100.1%) (-2.94, 2.94) [0.00, 5.00]
+SPRT ([0.00, 5.00]) completed - H1 was accepted
