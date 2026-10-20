@@ -311,6 +311,8 @@ pub const Searcher = struct {
     pv: [MAX_PLY + 1][MAX_PLY + 1]Move = undefined,
     pv_len: [MAX_PLY + 1]usize = undefined,
     acc: [MAX_PLY + 2]nnue.Accumulator = undefined,
+    /// King-bucket refresh cache, reset at the start of each search.
+    cache: nnue.Cache = undefined,
 
     pub fn create(gpa: std.mem.Allocator, io: Io, tt: *TT, net: ?*const nnue.Network, stop: *std.atomic.Value(bool)) !*Searcher {
         initLmr();
@@ -428,7 +430,7 @@ pub const Searcher = struct {
         const child = pos.makeMove(m);
         self.tt.prefetch(child.key);
         self.moved[ply] = contIndex(pos, m);
-        if (self.net) |n| nnue.update(n, &self.acc[ply], &self.acc[ply + 1], &child);
+        if (self.net) |n| nnue.update(n, &self.cache, &self.acc[ply], &self.acc[ply + 1], &child);
         self.keys[self.key_len] = child.key;
         self.key_len += 1;
         self.was_null[ply + 1] = false;
@@ -515,7 +517,10 @@ pub const Searcher = struct {
         for (&self.killers) |*k| k.* = .{ Move.none, Move.none };
         self.was_null[0] = false;
         for (&self.singular) |*m| m.* = Move.none;
-        if (self.net) |n| nnue.refresh(n, &self.acc[0], &self.root);
+        if (self.net) |n| {
+            self.cache.reset(n);
+            nnue.refresh(n, &self.acc[0], &self.root);
+        }
 
         var list = MoveList{};
         movegen.generate(&self.root, &list, .all);

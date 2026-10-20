@@ -136,6 +136,31 @@ pub const KingView = packed struct(u8) {
     }
 };
 
+/// Accumulator cache for king-bucket refreshes (a "Finny table"): for each
+/// perspective and king view, the accumulator last built for it and the
+/// pieces it was built from. A king move into another view then adds and
+/// removes only the pieces that changed since that view was last used,
+/// instead of every piece. Empty without king buckets. Reset it whenever the
+/// net changes.
+pub const Cache = struct {
+    entries: [2][VIEWS]Entry,
+
+    const VIEWS = if (MIRROR) 2 * KING_BUCKETS else 0;
+    const Entry = struct {
+        v: [HIDDEN]i16 align(64),
+        /// [color][piece type] bitboards the accumulator was built from.
+        pieces: [2][6]u64,
+    };
+
+    /// Every entry to the empty board, so that its first use adds every piece.
+    pub fn reset(c: *Cache, net: *const Network) void {
+        for (&c.entries) |*persp| for (persp) |*e| {
+            e.v = net.ft_b;
+            e.pieces = std.mem.zeroes([2][6]u64);
+        };
+    }
+};
+
 /// The view of `persp`, whose own king stands on `ksq`.
 pub inline fn kingView(persp: bb.Color, ksq: bb.Square) KingView {
     if (!MIRROR) return .{};
@@ -184,37 +209,70 @@ fn refreshPerspective(net: *const Network, acc: *Accumulator, pos: *const Positi
     var occ = pos.occupied();
     while (occ != 0) {
         const sq = bb.popLsb(&occ);
-        const w = row(net, featureIndex(persp, view, pos.board[sq], sq));
-        var i: usize = 0;
-        while (i < HIDDEN) : (i += LANES) {
-            const a: V16 = acc.v[persp][i..][0..LANES].*;
-            acc.v[persp][i..][0..LANES].* = a +% rowLanes(w, i);
-        }
+        addRow(&acc.v[persp], row(net, featureIndex(persp, view, pos.board[sq], sq)));
     }
 }
 
+inline fn addRow(v: *[HIDDEN]i16, w: *const [HIDDEN]FtW) void {
+    var i: usize = 0;
+    while (i < HIDDEN) : (i += LANES) {
+        const a: V16 = v[i..][0..LANES].*;
+        v[i..][0..LANES].* = a +% rowLanes(w, i);
+    }
+}
+
+inline fn subRow(v: *[HIDDEN]i16, w: *const [HIDDEN]FtW) void {
+    var i: usize = 0;
+    while (i < HIDDEN) : (i += LANES) {
+        const a: V16 = v[i..][0..LANES].*;
+        v[i..][0..LANES].* = a -% rowLanes(w, i);
+    }
+}
+
+/// refreshPerspective through the cache: the same accumulator (the adds wrap,
+/// so their order doesn't matter), from just the pieces that changed.
+fn refreshCached(net: *const Network, cache: *Cache, acc: *Accumulator, pos: *const Position, persp: bb.Color) void {
+    const view = positionView(persp, pos);
+    const e = &cache.entries[persp][@as(usize, view.bucket) * 2 + @intFromBool(view.mirror)];
+    for (0..2) |ci| {
+        const c: bb.Color = @intCast(ci);
+        for (0..6) |pti| {
+            const pt: bb.PieceType = @intCast(pti);
+            const pc = bb.makePiece(c, pt);
+            const now = pos.piecesOf(c, pt);
+            var add = now & ~e.pieces[c][pt];
+            var sub = e.pieces[c][pt] & ~now;
+            while (add != 0) addRow(&e.v, row(net, featureIndex(persp, view, pc, bb.popLsb(&add))));
+            while (sub != 0) subRow(&e.v, row(net, featureIndex(persp, view, pc, bb.popLsb(&sub))));
+            e.pieces[c][pt] = now;
+        }
+    }
+    acc.v[persp] = e.v;
+    acc.view[persp] = view;
+}
+
 /// dst = src + added features - removed features, for both perspectives, or a
-/// fresh build of a perspective whose king moved to another view. `pos` is the
-/// position after the move (its `dirty` lists the changes).
-pub fn update(net: *const Network, src: *const Accumulator, dst: *Accumulator, pos: *const Position) void {
+/// fresh build (through `cache`) of a perspective whose king moved to another
+/// view. `pos` is the position after the move (its `dirty` lists the changes).
+pub fn update(net: *const Network, cache: *Cache, src: *const Accumulator, dst: *Accumulator, pos: *const Position) void {
     // A kernel per shape of change, so the row loops unroll with the counts
     // known: a quiet move or promotion, a capture (en passant too), castling.
     const d = &pos.dirty;
     switch (@as(u8, d.n_add) << 2 | d.n_sub) {
-        1 << 2 | 1 => updateWith(1, 1, net, src, dst, pos),
-        1 << 2 | 2 => updateWith(1, 2, net, src, dst, pos),
-        2 << 2 | 2 => updateWith(2, 2, net, src, dst, pos),
+        1 << 2 | 1 => updateWith(1, 1, net, cache, src, dst, pos),
+        1 << 2 | 2 => updateWith(1, 2, net, cache, src, dst, pos),
+        2 << 2 | 2 => updateWith(2, 2, net, cache, src, dst, pos),
         else => unreachable,
     }
 }
 
-inline fn updateWith(comptime n_add: usize, comptime n_sub: usize, net: *const Network, src: *const Accumulator, dst: *Accumulator, pos: *const Position) void {
+inline fn updateWith(comptime n_add: usize, comptime n_sub: usize, net: *const Network, cache: *Cache, src: *const Accumulator, dst: *Accumulator, pos: *const Position) void {
     const d = &pos.dirty;
     inline for (0..2) |pi| {
         const persp: bb.Color = pi;
         const view = positionView(persp, pos);
         if (MIRROR and !view.eql(src.view[persp])) {
-            refreshPerspective(net, dst, pos, persp);
+            refreshCached(net, cache, dst, pos, persp);
         } else {
             dst.view[persp] = view;
             var adds: [n_add]*const [HIDDEN]FtW = undefined;
@@ -306,6 +364,8 @@ test "incremental update matches refresh" {
     var pos = try Position.fromFen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
     var acc: Accumulator = undefined;
     refresh(net, &acc, &pos);
+    var cache: Cache = undefined;
+    cache.reset(net);
     for (0..200) |_| {
         var list = movegen.MoveList{};
         movegen.generate(&pos, &list, .all);
@@ -313,7 +373,7 @@ test "incremental update matches refresh" {
         const m = list.moves[r.uintLessThan(usize, list.len)];
         const child = pos.makeMove(m);
         var inc: Accumulator = undefined;
-        update(net, &acc, &inc, &child);
+        update(net, &cache, &acc, &inc, &child);
         var fresh: Accumulator = undefined;
         refresh(net, &fresh, &child);
         try std.testing.expectEqualSlices(i16, &fresh.v[0], &inc.v[0]);

@@ -26,6 +26,18 @@ const OFF_OW = OFF_FTB + H;
 const OFF_OB = OFF_OW + NB * 2 * H;
 const P = OFF_OB + NB;
 
+/// Factoriser, in builds with more than one king bucket: one more 768 x H
+/// block of feature weights that every bucket shares. A bucket's weight is its
+/// own plus the shared one, so the shared part learns from every position and
+/// each bucket only learns how its king squares differ (8 buckets without it
+/// memorised gen7w's data). The passes run on the merged weights, and the
+/// shared block's gradient is the sum of the buckets'. Nets are exported
+/// merged, so the engine never sees it; checkpoints keep it.
+const FACTOR = nnue.KING_BUCKETS > 1;
+const FAC_N = if (FACTOR) 768 * H else 0;
+const OFF_FAC = P;
+const P_ALL = P + FAC_N;
+
 const CLIP = 1.98;
 /// Int8 feature weights (-Dft8) hold at most 127 / QA.
 const FT_CLIP: f32 = if (nnue.FT8) 127.0 / @as(f32, nnue.QA) else CLIP;
@@ -43,6 +55,8 @@ const help =
     \\  --wdl <x>          weight of game result vs. search score in the target (default 0.1)
     \\  --power <x>        loss exponent: |prediction - target|^x (default 2)
     \\  --threads <n>      worker threads (default: all cores)
+    \\  --test <files>     comma-separated held-out positions, scored after every epoch
+    \\                     and never trained on (e.g. a later generation's games)
     \\  --init <ckpt>      start from a float checkpoint instead of random weights
     \\  --seed <n>         shuffle/initialisation seed (default 1)
     \\  --quiet-only       train on quiet positions only: not in check, and no capture
@@ -140,6 +154,9 @@ inline fn sigmoid(x: f32) f32 {
 const Trainer = struct {
     data: []const Record,
     params: []f32,
+    /// The feature weights the passes use: the merged ones with the
+    /// factoriser, otherwise params' own.
+    ftw: []f32,
     m: []f32,
     v: []f32,
     grads: [][]f32,
@@ -167,8 +184,8 @@ const Trainer = struct {
         s.acc_s = ftb.*;
         s.acc_n = ftb.*;
         for (s.feats.stm[0..s.feats.n], s.feats.nstm[0..s.feats.n]) |fs, fnn| {
-            const ws = t.params[OFF_FTW + @as(usize, fs) * H ..][0..H];
-            const wn = t.params[OFF_FTW + @as(usize, fnn) * H ..][0..H];
+            const ws = t.ftw[@as(usize, fs) * H ..][0..H];
+            const wn = t.ftw[@as(usize, fnn) * H ..][0..H];
             for (0..H) |j| {
                 s.acc_s[j] += ws[j];
                 s.acc_n[j] += wn[j];
@@ -257,20 +274,50 @@ const Trainer = struct {
         const beta2: f32 = 0.999;
         const eps: f32 = 1e-8;
         const decay: f32 = 0.01;
-        const lo = P * tid / t.threads;
-        const hi = P * (tid + 1) / t.threads;
+        const lo = P_ALL * tid / t.threads;
+        const hi = P_ALL * (tid + 1) / t.threads;
         for (lo..hi) |i| {
             var g: f32 = 0;
-            for (t.grads) |gr| g += gr[i];
+            if (i < P) {
+                for (t.grads) |gr| g += gr[i];
+            } else {
+                // A shared weight: every bucket's gradient for its feature.
+                const f = i - OFF_FAC;
+                for (t.grads) |gr| for (0..nnue.KING_BUCKETS) |b| {
+                    g += gr[OFF_FTW + b * FAC_N + f];
+                };
+            }
             g *= a.inv_batch;
             t.m[i] = beta1 * t.m[i] + (1 - beta1) * g;
             t.v[i] = beta2 * t.v[i] + (1 - beta2) * g * g;
             const mh = t.m[i] / a.bc1;
             const vh = t.v[i] / a.bc2;
             const w = t.params[i] - a.lr * (mh / (@sqrt(vh) + eps) + decay * t.params[i]);
-            const clip = if (i < OFF_FTB) FT_CLIP else CLIP;
-            t.params[i] = std.math.clamp(w, -clip, clip);
+            if (FACTOR and i < OFF_FTB) {
+                t.params[i] = w; // mergeWorker keeps the merged weight in range
+            } else {
+                const clip = if (i < OFF_FTB or i >= OFF_FAC) FT_CLIP else CLIP;
+                t.params[i] = std.math.clamp(w, -clip, clip);
+            }
         }
+    }
+
+    /// Factoriser: ftw = bucket + shared weights, each bucket weight clamped
+    /// so that the merged one, which the export quantises, stays in range.
+    fn mergeWorker(t: *Trainer, tid: usize, _: void) void {
+        const lo = IN * H * tid / t.threads;
+        const hi = IN * H * (tid + 1) / t.threads;
+        for (lo..hi) |i| {
+            const s = t.params[OFF_FAC + i % FAC_N];
+            const b = std.math.clamp(t.params[OFF_FTW + i], -FT_CLIP - s, FT_CLIP - s);
+            t.params[OFF_FTW + i] = b;
+            t.ftw[i] = b + s;
+        }
+    }
+
+    /// Brings ftw up to date with params (after a step or a load).
+    fn merge(t: *Trainer) !void {
+        if (FACTOR) try t.parallel(Trainer.mergeWorker, {});
     }
 
     fn parallel(t: *Trainer, comptime f: anytype, extra: anytype) !void {
@@ -286,14 +333,15 @@ const Trainer = struct {
     }
 };
 
-fn quantize(params: []const f32, net: *nnue.Network) void {
+/// `ftw` is the (merged) feature weights, Trainer.ftw.
+fn quantize(ftw: []const f32, params: []const f32, net: *nnue.Network) void {
     const q = struct {
         fn f(comptime T: type, x: f32, scale: f32) T {
             const lim: f32 = std.math.maxInt(T);
             return @intFromFloat(std.math.clamp(@round(x * scale), -lim, lim));
         }
     }.f;
-    for (0..IN * H) |i| net.ft_w[i] = q(nnue.FtW, params[OFF_FTW + i], nnue.QA);
+    for (0..IN * H) |i| net.ft_w[i] = q(nnue.FtW, ftw[i], nnue.QA);
     for (0..H) |i| net.ft_b[i] = q(i16, params[OFF_FTB + i], nnue.QA);
     for (0..NB) |b| {
         for (0..2 * H) |j| net.out_w[b][j] = q(i16, params[OFF_OW + b * 2 * H + j], nnue.QB);
@@ -301,10 +349,10 @@ fn quantize(params: []const f32, net: *nnue.Network) void {
     }
 }
 
-fn saveNet(gpa: std.mem.Allocator, io: Io, params: []const f32, path: []const u8) !void {
+fn saveNet(gpa: std.mem.Allocator, io: Io, t: *const Trainer, path: []const u8) !void {
     const net = try gpa.create(nnue.Network);
     defer gpa.destroy(net);
-    quantize(params, net);
+    quantize(t.ftw, t.params, net);
     const f = try Io.Dir.cwd().createFile(io, path, .{});
     defer f.close(io);
     var buf: [65536]u8 = undefined;
@@ -319,17 +367,43 @@ fn saveCheckpoint(io: Io, params: []const f32, path: []const u8) !void {
     var header: [12]u8 = undefined;
     @memcpy(header[0..4], CKPT_MAGIC);
     std.mem.writeInt(u32, header[4..8], H, .little);
-    std.mem.writeInt(u32, header[8..12], P, .little);
+    std.mem.writeInt(u32, header[8..12], P_ALL, .little);
     try f.writePositionalAll(io, &header, 0);
     try f.writePositionalAll(io, std.mem.sliceAsBytes(params), header.len);
 }
 
 fn loadCheckpoint(gpa: std.mem.Allocator, io: Io, path: []const u8, params: []f32) !void {
-    const bytes = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(12 + P * 4 + 1));
+    const bytes = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(12 + P_ALL * 4 + 1));
     defer gpa.free(bytes);
-    if (bytes.len != 12 + P * 4 or !std.mem.eql(u8, bytes[0..4], CKPT_MAGIC) or
-        std.mem.readInt(u32, bytes[8..12], .little) != P) return error.BadCheckpoint;
+    if (bytes.len != 12 + P_ALL * 4 or !std.mem.eql(u8, bytes[0..4], CKPT_MAGIC) or
+        std.mem.readInt(u32, bytes[8..12], .little) != P_ALL) return error.BadCheckpoint;
     @memcpy(std.mem.sliceAsBytes(params), bytes[12..]);
+}
+
+/// Reads a datagen file into the start of `dst`; returns the positions read.
+fn readRecords(io: Io, path: []const u8, dst: []Record) !usize {
+    const f = try Io.Dir.cwd().openFile(io, path, .{});
+    defer f.close(io);
+    const n = (try f.length(io)) / @sizeOf(Record);
+    // In chunks: macOS rejects a single read of 2 GiB or more.
+    const bytes = std.mem.sliceAsBytes(dst[0..n]);
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const want = @min(bytes.len - off, 1 << 30);
+        const got = try f.readPositionalAll(io, bytes[off..][0..want], off);
+        off += got;
+        if (got < want) break;
+    }
+    return off / @sizeOf(Record);
+}
+
+fn positionsIn(io: Io, paths: []const []const u8) !usize {
+    var total: usize = 0;
+    for (paths) |path| {
+        const st = try Io.Dir.cwd().statFile(io, path, .{});
+        total += st.size / @sizeOf(Record);
+    }
+    return total;
 }
 
 /// Mean absolute difference (centipawns) between the float network and the
@@ -337,7 +411,7 @@ fn loadCheckpoint(gpa: std.mem.Allocator, io: Io, path: []const u8, params: []f3
 fn quantisationError(gpa: std.mem.Allocator, t: *const Trainer, idxs: []const u32) !f64 {
     const net = try gpa.create(nnue.Network);
     defer gpa.destroy(net);
-    quantize(t.params, net);
+    quantize(t.ftw, t.params, net);
     var sum: f64 = 0;
     var s: Trainer.Sample = undefined;
     for (idxs) |i| {
@@ -353,6 +427,8 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     var p = cli.Parser{ .args = args };
     var paths: std.ArrayList([]const u8) = .empty;
     defer paths.deinit(gpa);
+    var test_paths: std.ArrayList([]const u8) = .empty;
+    defer test_paths.deinit(gpa);
     var out_path: []const u8 = "";
     var epochs: usize = 10;
     var batch_size: usize = 16384;
@@ -371,6 +447,9 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         if (p.flag(a, "--data")) |v| {
             var it = std.mem.tokenizeScalar(u8, v, ',');
             while (it.next()) |path| try paths.append(gpa, path);
+        } else if (p.flag(a, "--test")) |v| {
+            var it = std.mem.tokenizeScalar(u8, v, ',');
+            while (it.next()) |path| try test_paths.append(gpa, path);
         } else if (p.flag(a, "--out")) |v| out_path = v
         else if (p.int(usize, a, "--epochs")) |v| epochs = v
         else if (p.int(usize, a, "--batch")) |v| batch_size = @max(v, 64)
@@ -390,37 +469,23 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         return;
     }
 
-    // Load every data file into one contiguous array.
-    var total: usize = 0;
-    for (paths.items) |path| {
-        const st = try Io.Dir.cwd().statFile(io, path, .{});
-        total += st.size / @sizeOf(Record);
-    }
+    // Load every data file into one contiguous array, the test positions last.
+    const total = try positionsIn(io, paths.items);
     if (total < batch_size * 2) {
         out.print("not enough data: {d} positions\n", .{total});
         return error.NotEnoughData;
     }
+    const total_test = try positionsIn(io, test_paths.items);
     // Mapped directly rather than through gpa: Zig 0.16's PageAllocator hints
     // each mapping just below the previous one, and for a buffer larger than
     // that address (> 4 GiB on macOS) the hint wraps and mmap fails.
-    const mapped = try std.posix.mmap(null, total * @sizeOf(Record), .{ .READ = true, .WRITE = true }, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
+    const mapped = try std.posix.mmap(null, (total + total_test) * @sizeOf(Record), .{ .READ = true, .WRITE = true }, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
     defer std.posix.munmap(mapped);
     const data = std.mem.bytesAsSlice(Record, mapped);
     var filled: usize = 0;
     for (paths.items) |path| {
-        const f = try Io.Dir.cwd().openFile(io, path, .{});
-        defer f.close(io);
-        const n = (try f.length(io)) / @sizeOf(Record);
-        // In chunks: macOS rejects a single read of 2 GiB or more.
-        const bytes = std.mem.sliceAsBytes(data[filled..][0..n]);
-        var off: usize = 0;
-        while (off < bytes.len) {
-            const want = @min(bytes.len - off, 1 << 30);
-            const got = try f.readPositionalAll(io, bytes[off..][0..want], off);
-            off += got;
-            if (got < want) break;
-        }
-        filled += off / @sizeOf(Record);
+        const n = try readRecords(io, path, data[filled..]);
+        filled += n;
         out.print("loaded {d} positions from {s}\n", .{ n, path });
     }
 
@@ -429,6 +494,18 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         filled = try keepQuiet(gpa, data[0..filled], threads);
         out.print("quiet only: kept {d} of {d} positions ({d:.1}%)\n", .{ filled, before, 100 * @as(f64, @floatFromInt(filled)) / @as(f64, @floatFromInt(@max(before, 1))) });
     }
+
+    // Test positions: after the training ones, outside the training and
+    // validation split, scored with the same loss.
+    var n_test: usize = 0;
+    for (test_paths.items) |path| {
+        const n = try readRecords(io, path, data[filled + n_test ..]);
+        n_test += n;
+        out.print("loaded {d} test positions from {s}\n", .{ n, path });
+    }
+    const test_idx = try gpa.alloc(u32, n_test);
+    defer gpa.free(test_idx);
+    for (test_idx, 0..) |*x, i| x.* = @intCast(filled + i);
 
     var prng = std.Random.DefaultPrng.init(seed);
     const rng = prng.random();
@@ -480,11 +557,11 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     rng.shuffle(u32, val_idx);
     out.print("validation: {d} positions from {d} whole games (of {d})\n", .{ val_n, val_games, n_games });
 
-    const params = try gpa.alloc(f32, P);
+    const params = try gpa.alloc(f32, P_ALL);
     defer gpa.free(params);
-    const m = try gpa.alloc(f32, P);
+    const m = try gpa.alloc(f32, P_ALL);
     defer gpa.free(m);
-    const v = try gpa.alloc(f32, P);
+    const v = try gpa.alloc(f32, P_ALL);
     defer gpa.free(v);
     @memset(m, 0);
     @memset(v, 0);
@@ -493,9 +570,14 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         out.print("initialised from {s}\n", .{init_path});
     } else {
         @memset(params, 0);
-        for (params[OFF_FTW..OFF_FTB]) |*x| x.* = (rng.float(f32) * 2 - 1) * 0.1;
+        // With the factoriser the buckets start equal (at zero) and the shared
+        // block takes the random start.
+        const ft_init = if (FACTOR) params[OFF_FAC..P_ALL] else params[OFF_FTW..OFF_FTB];
+        for (ft_init) |*x| x.* = (rng.float(f32) * 2 - 1) * 0.1;
         for (params[OFF_OW..OFF_OB]) |*x| x.* = (rng.float(f32) * 2 - 1) * 0.05;
     }
+    const ftw = if (FACTOR) try gpa.alloc(f32, IN * H) else params[OFF_FTW..OFF_FTB];
+    defer if (FACTOR) gpa.free(ftw);
 
     const grads = try gpa.alloc([]f32, threads);
     defer gpa.free(grads);
@@ -504,21 +586,23 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
     const losses = try gpa.alloc(f64, threads);
     defer gpa.free(losses);
 
-    var t = Trainer{ .data = data[0..filled], .params = params, .m = m, .v = v, .grads = grads, .losses = losses, .threads = threads, .wdl = wdl, .power = power };
+    var t = Trainer{ .data = data[0 .. filled + n_test], .params = params, .ftw = ftw, .m = m, .v = v, .grads = grads, .losses = losses, .threads = threads, .wdl = wdl, .power = power };
+    try t.merge();
 
     const ckpt_path = try std.fmt.allocPrint(gpa, "{s}.ckpt", .{out_path});
     defer gpa.free(ckpt_path);
 
     const steps_per_epoch = train_idx.len / batch_size;
     const total_steps = steps_per_epoch * epochs;
-    out.print("training {d}->{d}x2->1 ({d} king buckets, {d} output buckets, loss power {d}) on {d} positions ({d} validation), {d} epochs x {d} batches, {d} threads\n", .{
-        IN, H, nnue.KING_BUCKETS, NB, power, train_idx.len, val_n, epochs, steps_per_epoch, threads,
+    out.print("training {d}->{d}x2->1 ({d} king buckets{s}, {d} output buckets, loss power {d}) on {d} positions ({d} validation, {d} test), {d} epochs x {d} batches, {d} threads\n", .{
+        IN, H, nnue.KING_BUCKETS, if (FACTOR) " factorised" else "", NB, power, train_idx.len, val_n, n_test, epochs, steps_per_epoch, threads,
     });
 
     try t.parallel(Trainer.lossWorker, @as([]const u32, val_idx));
     out.print("initial validation loss {d:.6}\n", .{t.meanLoss(val_n)});
+    if (n_test > 0) out.print("initial test loss {d:.6}\n", .{try testLoss(&t, test_idx)});
     if (epochs == 0) {
-        try saveNet(gpa, io, params, out_path);
+        try saveNet(gpa, io, &t, out_path);
         const diff = try quantisationError(gpa, &t, val_idx[0..@min(val_idx.len, 2000)]);
         out.print("quantised {s} -> {s}: vs float eval mean |diff| {d:.2} cp\n", .{ init_path, out_path, diff });
         return;
@@ -547,6 +631,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
                 .bc2 = 1 - std.math.pow(f32, 0.999, st),
                 .inv_batch = 1.0 / @as(f32, @floatFromInt(batch_size)),
             });
+            try t.merge();
 
             if (b % 50 == 49 or b + 1 == steps_per_epoch) {
                 const ms = @max(t0.durationTo(Io.Clock.awake.now(io)).toMilliseconds(), 1);
@@ -558,12 +643,18 @@ pub fn run(gpa: std.mem.Allocator, io: Io, out: *Output, args: []const [:0]const
         }
         try t.parallel(Trainer.lossWorker, @as([]const u32, val_idx));
         const val = t.meanLoss(val_n);
-        try saveNet(gpa, io, params, out_path);
+        try saveNet(gpa, io, &t, out_path);
         try saveCheckpoint(io, params, ckpt_path);
         const diff = try quantisationError(gpa, &t, val_idx[0..@min(val_idx.len, 2000)]);
         out.print("\nepoch {d}: quantised vs float eval: mean |diff| {d:.2} cp\n", .{ epoch + 1, diff });
         out.print("epoch {d}: train loss {d:.6}  validation loss {d:.6}  -> {s}\n", .{
             epoch + 1, epoch_loss / @as(f64, @floatFromInt(steps_per_epoch * batch_size)), val, out_path,
         });
+        if (n_test > 0) out.print("epoch {d}: test loss {d:.6}\n", .{ epoch + 1, try testLoss(&t, test_idx) });
     }
+}
+
+fn testLoss(t: *Trainer, test_idx: []const u32) !f64 {
+    try t.parallel(Trainer.lossWorker, test_idx);
+    return t.meanLoss(test_idx.len);
 }
