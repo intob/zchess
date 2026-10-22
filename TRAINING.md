@@ -393,6 +393,28 @@ Branch `train/factoriser` (worktree `~/zchess-kb`) retries king buckets the stan
   the validation games say −6%. To compare against the net that generated it, re-score
   it with another engine (e.g. Stockfish) first; between new nets it's fair.
 
+### gen10w (2026-10-21, Mac + cluster)
+- Data: gen10book, 152.2M positions: the Mac 78.8M, bitch-box 26.1M, pi5 24.6M, pi1
+  22.7M. The first 7.1M (cluster) are gen8w's, the rest gen9w's; `data/test10.bin` was
+  taken out first. Window: gen8book + gen9book + gen10book, 470.6M positions.
+- Recipe: gen9w's, `--power 2.5 --epochs 30 --seed 1`, 512 wide, int8 features
+  (`FT8=1`). 5 h 58 min on the Mac (`gen10-run.sh`, untracked, log `gen10.log`).
+- Validation (100,016 positions from 949 held-out games): 0.001519 at epoch 1 → 0.001290
+  at epoch 30; train loss 0.001161.
+- [x] gen10w vs gen9w, 8+0.08 [0, 5]: **+8.7 ± 4.9, H1** at 4848 games
+  (+831 =3307 −710). **Promoted** (`nets/best.txt`). Engines built from ff49098.
+- gen11book: the cluster (pi1, pi5, bitch-box) started on it with gen9w at 02:35 on
+  10-21 and switched to gen10w at 12:05, so **the first 24.0M gen11book positions are
+  from gen9w**. bitch-box has been held for the search SPRT queue since 19:25 on 10-21.
+  The Mac joined with gen10w at 15:44 on 10-22.
+- [x] gen10w-e45: the same window, recipe and seed with 45 epochs (the cosine schedule
+  stretched over them). 10 h 20 min. At epoch 45: train loss 0.001156, validation
+  0.001279 (−0.9% vs gen10w). Its epoch-30 checkpoint, at a higher learning rate, was
+  0.001303. SPRT vs gen10w, 8+0.08 [0, 5]: **+0.7 ± 3.8** after 9060 games
+  (+1491 =6095 −1474, LLR −0.45). Stopped 2026-10-22 to give the Mac back to datagen.
+  Not promoted. 30 epochs stays: at this data size, 50% more training time buys under
+  1 Elo, if anything.
+
 ### Step 3: bigger net (trained; width confirmed, promotion test running)
 512 hidden. `nnue.HIDDEN` is a compile-time constant, so the in-process `match`
 can't compare a 512 net with a 256 net: build per size and SPRT the two binaries

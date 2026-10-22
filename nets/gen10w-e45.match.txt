@@ -1,0 +1,7 @@
+sprt: gen10w-e45-vs-gen10w (bins/gen10w-e45/bin/zchess) vs base (bins/gen10w/bin/zchess), tc=8+0.08, SPRT [0, 5], concurrency 10 -> sprt/20261021-2228-gen10w-e45-vs-gen10w
+LLR: -0.45 (-15.1%) (-2.94, 2.94) [0.00, 5.00]
+Results of gen10w-e45-vs-gen10w vs base (8+0.08, 1t, 16MB, openings.epd):
+Elo: 0.65 +/- 3.78, nElo: 1.24 +/- 7.15
+Games: 9060, Wins: 1491, Losses: 1474, Draws: 6095, Points: 4538.5 (50.09 %)
+Ptnml(0-2): [100, 854, 2604, 873, 99], WL/DD Ratio: 0.19
+LLR: -0.47 (-16.1%) (-2.94, 2.94) [0.00, 5.00]

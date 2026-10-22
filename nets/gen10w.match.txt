@@ -1,0 +1,7 @@
+sprt: gen10w-vs-best (bins/gen10w/bin/zchess) vs base (bins/best/bin/zchess), tc=8+0.08, SPRT [0, 5], concurrency 10 -> sprt/20261021-0836-gen10w-vs-best
+Results of gen10w-vs-best vs base (8+0.08, 1t, 16MB, openings.epd):
+Elo: 8.67 +/- 4.91, nElo: 17.29 +/- 9.78
+Games: 4848, Wins: 831, Losses: 710, Draws: 3307, Points: 2484.5 (51.25 %)
+Ptnml(0-2): [28, 423, 1418, 510, 45], WL/DD Ratio: 0.19
+LLR: 2.97 (100.7%) (-2.94, 2.94) [0.00, 5.00]
+SPRT ([0.00, 5.00]) completed - H1 was accepted
