@@ -223,7 +223,7 @@ const ScoredMoves = struct {
     /// going to be: the quiets, and the noisy moves failing SEE at
     /// `see_threshold` (the capture pruning, which depends on nothing else).
     /// Noisy moves left here are the SEE losers and underpromotions, which
-    /// score below every quiet (history stays within ±3 × 16384), so the picks
+    /// score below every quiet (history stays within ±4 × 16384), so the picks
     /// would have taken all the quiets first. When the kept moves' scores are
     /// distinct the order they come out in is fixed whatever the quiet picks
     /// swapped around, and the search sees exactly the same moves in the same
@@ -295,7 +295,7 @@ pub const Searcher = struct {
 
     history: [2][64][64]i32 = std.mem.zeroes([2][64][64]i32),
     /// Continuation history: [earlier move][this move], each as piece * 64 + to,
-    /// for the moves one and two plies back. Zeroed in create (too big for a
+    /// for the moves one, two and four plies back. Zeroed in create (too big for a
     /// comptime default).
     cont_hist: [12 * 64][12 * 64]i16 = undefined,
     /// Capture history: [moving piece * 64 + to][captured piece type], how
@@ -356,6 +356,7 @@ pub const Searcher = struct {
         var h = self.history[pos.side][m.from()][m.to()];
         if (self.contEntry(ply, 1, idx)) |e| h += e.*;
         if (self.contEntry(ply, 2, idx)) |e| h += e.*;
+        if (self.contEntry(ply, 4, idx)) |e| h += e.*;
         return h;
     }
 
@@ -364,6 +365,7 @@ pub const Searcher = struct {
         const idx = contIndex(pos, m);
         if (self.contEntry(ply, 1, idx)) |e| updateHistory16(e, bonus);
         if (self.contEntry(ply, 2, idx)) |e| updateHistory16(e, bonus);
+        if (self.contEntry(ply, 4, idx)) |e| updateHistory16(e, bonus);
     }
 
     /// Set the root position. `game_keys` are hashes of earlier positions in
@@ -457,6 +459,7 @@ pub const Searcher = struct {
         const hist = &self.history[pos.side];
         const cont1 = self.contRow(ply, 1);
         const cont2 = self.contRow(ply, 2);
+        const cont4 = self.contRow(ply, 4);
         var tt_index: ?usize = null;
         for (sm.list.slice(), 0..) |m, i| {
             var s: i32 = 0;
@@ -482,6 +485,7 @@ pub const Searcher = struct {
                 s = hist[m.from()][m.to()];
                 if (cont1) |c| s += c[idx];
                 if (cont2) |c| s += c[idx];
+                if (cont4) |c| s += c[idx];
             }
             sm.scores[i] = s;
         }

@@ -234,6 +234,10 @@ previous accepted change, all with gen6w embedded. Developed as stacked branches
   14 on 40 positions at 16 MB, same nps. 1 thread, vs faef397 on bitch-box: **+1.2 ± 3.0**
   after 15160 games (+2605 =10002 −2553, LLR −0.18), stopped 2026-10-20. Not merged:
   at most a couple of Elo with 16 MB hash at this time control.
+- [x] Continuation history 4 plies back (branch `search/conthist4`): the same table,
+  read and updated for the move 4 plies back as well as 1 and 2 (history now within
+  ±4 × 16384). 1 thread, both with gen10w, vs ff49098 on bitch-box: **+4.3 ± 3.1, H1**
+  at 10846 games (+1570 =7839 −1437). Merged 2026-10-22.
 
 ### Loss power, king buckets, longer schedule (started 2026-10-12 18:52, Mac + bitch-box)
 New in the trainer and engine:
