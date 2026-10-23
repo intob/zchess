@@ -303,6 +303,8 @@ pub const Searcher = struct {
     cap_hist: [12 * 64][6]i16 = undefined,
     /// Continuation index of the move played at each ply.
     moved: [MAX_PLY + 2]u16 = undefined,
+    /// Move played at each ply (none for a null move).
+    played: [MAX_PLY + 2]Move = undefined,
     killers: [MAX_PLY + 2][2]Move = undefined,
     evals: [MAX_PLY + 2]i32 = undefined,
     was_null: [MAX_PLY + 2]bool = undefined,
@@ -428,6 +430,7 @@ pub const Searcher = struct {
         const child = pos.makeMove(m);
         self.tt.prefetch(child.key);
         self.moved[ply] = contIndex(pos, m);
+        self.played[ply] = m;
         if (self.net) |n| nnue.update(n, &self.acc[ply], &self.acc[ply + 1], &child);
         self.keys[self.key_len] = child.key;
         self.key_len += 1;
@@ -736,6 +739,7 @@ pub const Searcher = struct {
                 self.key_len += 1;
                 self.was_null[ply + 1] = true;
                 self.moved[ply] = NO_CONT;
+                self.played[ply] = Move.none;
                 const s = -self.negamax(&child, -beta, -beta + 1, depth - r, ply + 1, false, !cut_node);
                 self.unmake();
                 if (self.stopped) return 0;
@@ -879,6 +883,19 @@ pub const Searcher = struct {
             if (quiet and n_quiets < quiets.len) {
                 quiets[n_quiets] = m;
                 n_quiets += 1;
+            }
+        }
+
+        // Every move failed low: the opponent's quiet move that led here was a
+        // good one, so credit it as if it had caused a cutoff in its own node.
+        if (!root and !verifying and best_score <= alpha_in) {
+            const pm = self.played[ply - 1];
+            if (pm.data != 0 and !pm.isNoisy()) {
+                const bonus = @min(16 * depth * depth + 32 * depth, 1500);
+                updateHistory(&self.history[pos.side ^ 1][pm.from()][pm.to()], bonus);
+                const idx = self.moved[ply - 1];
+                if (self.contEntry(ply - 1, 1, idx)) |e| updateHistory16(e, bonus);
+                if (self.contEntry(ply - 1, 2, idx)) |e| updateHistory16(e, bonus);
             }
         }
 
