@@ -280,3 +280,7 @@ reached in 20+ games are kept (the coach's `MIN_THEORY`), about 360k of them, 25
   built for; `-Dnet` sets that from the file's header, otherwise `-Dft8`.
   `train --init <ckpt> --epochs 0` re-exports a checkpoint in a binary's format.
 - **Checkpoint** (`.nnue.ckpt`): float32 parameters, for `train --init`.
+
+## Licence
+
+GPL-3.0 (`LICENSE`). The piece images in `scripts/review-assets` are cburnett's, GPLv2+.

@@ -2,8 +2,11 @@
 # Put a Pi on the WireGuard overlay (hub: bitch-box) so the laptop can reach it
 # from anywhere. The Pi dials out; nothing at home accepts inbound traffic.
 #
-#   scripts/wg-enroll-pi.sh <lan-ssh-host> <name> <overlay-ip>
-#   e.g. scripts/wg-enroll-pi.sh pi2.local pi2 10.99.0.12
+#   HUB_PUBKEY=<key> HUB_ENDPOINT=<host:port> scripts/wg-enroll-pi.sh <lan-ssh-host> <name> <overlay-ip>
+#   e.g. ... scripts/wg-enroll-pi.sh pi2.local pi2 10.99.0.12
+#
+# The hub's key and address come from the environment, not this file, so the
+# address of the box behind it isn't published with the repo.
 #
 # Refuses Pis that still accept SSH passwords: once on the overlay, the Pi's
 # SSH key check is the boundary against the internet-facing hub.
